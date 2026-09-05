@@ -1,204 +1,157 @@
-## Quick Serve TypeScript – Starter Template
+# Mustan Healthcare Pharmacy — API
 
-Production-ready Express + TypeScript starter with JWT auth, Sequelize (SQL), validation, file uploads, email (Nodemailer/Handlebars), and helpful utilities.
+Express + TypeScript + PostgreSQL back end for the pharmacy's point-of-sale and
+inventory system. It runs on the pharmacy's own machine on the local network;
+no internet is needed for daily operation.
 
-### Features
-- **TypeScript + tsx**: Fast dev runtime with `tsx`, compiled builds via `tsc`
-- **Express**: API server with middlewares (CORS, morgan, cookie-parser)
-- **JWT Auth**: Access/refresh token generation and verification
-- **Sequelize**: SQL ORM (MySQL by default); example `Auth` model wired
-- **Validation**: `express-validator` examples for auth
-- **Email**: Nodemailer + Handlebars templates and Brevo (Sendinblue) REST support
-- **Uploads**: Cloudinary SDK integrated
-- **Utilities**: Password hashing, token helpers, phone utils, message shaping
+The front end lives beside this repo in `mustaan-frontend`.
 
-### Tech Stack
-- Node.js, TypeScript
-- Express, express-validator
-- Sequelize, mysql2
-- jsonwebtoken, bcrypt/bcryptjs
-- Nodemailer, nodemailer-express-handlebars, Brevo API (axios)
-- Cloudinary
+---
 
-### Project Structure
-```
-src/
-  controllers/
-    users/
-      authController.ts         # register/login controllers
-  middlewares/
-    auth.ts                     # JWT verify middleware
-  modules/
-    notifications/
-      email.ts                  # Nodemailer + Handlebars
-      brevo.ts                  # Brevo REST email
-    storage/
-      cloudinary.ts             # Cloudinary upload helper
-    views/                      # Handlebars email templates
-  routes/
-    index.ts                    # mounts routers under /api/v1
-    users/
-      index.ts                  # (wire controllers + validations here)
-  schemas/
-    users/
-      authSchema.ts             # Sequelize model + init
-  services/
-    users/
-      authService.ts            # register/login business logic
-  types/
-    users/auth.ts               # DTOs for auth
-    nodemailer-express-handlebars.d.ts # local type shim
-  utils/
-    index.ts                    # hashing, jwt utils, validators, messageHandler
-index.ts                        # app bootstrap (uses src/routes/index)
-```
+## Getting started
 
-### Getting Started
-1) Install dependencies
+You need **Node 20+**, **pnpm**, and **PostgreSQL 14 or newer** running locally.
+You do *not* need to create the database by hand — `pnpm setup` does that.
+
 ```bash
-npm install
+pnpm install
+
+cp .env.example .env      # then fill in the two blanks, see below
+
+pnpm setup                # creates the database, builds the schema, seeds it
+pnpm dev                  # http://localhost:5000
 ```
 
-2) Configure environment (.env)
+### Filling in `.env`
+
+Two values have no sensible default:
+
+| key | what to put |
+|---|---|
+| `DB_PASSWORD` | the password for your local `postgres` user |
+| `SECRET_KEY`  | any long random string — it signs the session cookie |
+
+Generate a secret with:
+
 ```bash
-NODE_ENV=development
-PORT=4000
-
-# JWT
-SECRET_KEY=your_jwt_secret
-
-# Database (Sequelize / MySQL)
-DB_HOST=localhost
-DB_PORT=3306
-DB_USER=root
-DB_PASSWORD=your_password
-DB_NAME=quick_serve
-
-# Nodemailer (Gmail example)
-EMAIL_USER=your@gmail.com
-EMAIL_PASSWORD=your_app_password
-
-# Brevo (optional)
-BREVO_API_KEY=your_brevo_api_key
-BREVO_SENDER_EMAIL=hello@example.com
-BREVO_SENDER_NAME=Vyntra
-BREVO_API_URL=https://api.brevo.com/v3/smtp/email
-
-# Cloudinary (optional)
-CLOUDINARY_CLOUD_NAME=...
-CLOUDINARY_API_KEY=...
-CLOUDINARY_API_SECRET=...
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ```
 
-3) Database setup
-- Ensure `src/database/db.ts` (imported as `../../database/db.js`) connects Sequelize using env vars and exports a Sequelize instance.
-- Confirm `Auth` model initialization succeeds. Run migrations or `sequelize.sync()` depending on your setup.
+`.env` is gitignored and must stay that way — it holds the database password
+and the session signing key.
 
-4) Run in development
-```bash
-npm run dev
+---
+
+## What `pnpm setup` gives you
+
+You start with a **working pharmacy, not an empty database**. Every screen has
+something true to show, because the seed is built so the figures agree with
+each other rather than merely existing.
+
+- **37 products** across 10 categories — real Nigerian pharmacy stock
+  (Paracetamol, Coartem, Augmentin, Ampiclox, ORS, Ventolin…), priced in naira
+- **111 batches** spread deliberately across the expiry bands
+- **~6,700 sales over 90 days**, averaging about ₦3,900 a basket, so the
+  reports, charts and cashier totals have real history behind them
+
+The stock is arranged so every state in the interface is reachable:
+
+| state | where to see it |
+|---|---|
+| Out of stock | Adhesive Bandage — no batches at all |
+| Low stock | Vitamin C (4 of 20), Zinc Sulphate (9 of 10) |
+| Expired stock on the shelf | Fansidar, Benylin — units present, all expired |
+| Expiring soon | Panadol Extra (14 days), Coartem (25 days) |
+| Multi-batch FEFO | Paracetamol 500mg — two batches, different expiries |
+
+Two invariants hold across the seeded data, and are worth preserving if you
+change it: every batch satisfies `quantityReceived − unitsSold = quantityRemaining`
+with the stock ledger walking that path step by step, and nothing is dated in
+the future.
+
+### Signing in
+
+All three seeded accounts use the password **`Pharmacy@2026`**:
+
+| username | role |
+|---|---|
+| `admin` | Administrator |
+| `sarah` | Cashier |
+| `ibrahim` | Cashier |
+
+---
+
+## Scripts
+
+| command | does |
+|---|---|
+| `pnpm setup` | `db:create` then `seed` — the one command a new machine needs |
+| `pnpm db:create` | creates the database if it does not exist; safe to re-run |
+| `pnpm seed` | wipes and re-seeds. Run it whenever you want a clean shop back |
+| `pnpm dev` | development server with reload, on `PORT` (default 5000) |
+| `pnpm build` | compiles TypeScript to `dist/` |
+| `pnpm start` | runs the compiled build |
+
+The schema itself is created by `sequelize.sync()` when the server or the seed
+connects, so there is no separate migration step to run.
+
+> **`pnpm seed` deletes every sale, return, stock movement and audit entry.**
+> That is what you want on a development machine. It refuses to run when
+> `NODE_ENV=production` unless you pass `--force`, because on the pharmacy's
+> server those rows are the business records.
+
+---
+
+## How the code is laid out
+
+A request flows in one direction, one layer per file:
+
+```
+routes/<domain>/index.ts        URL, auth guard, validation
+  → controllers/<domain>/…      thin; reads the request, calls the service
+    → services/<domain>/…       all the business logic
+      → schemas/<domain>/…      Sequelize models
 ```
 
-5) Build and start
-```bash
-npm run build
-npm start
-```
+Every response uses the same envelope, which the front end unwraps in one place:
 
-The app responds at `/` with a simple health message and mounts API routes under `/api/v1`.
-
-### Auth Flow
-- Registration: creates user, hashes password, issues access/refresh tokens, stores refresh token + expiry.
-- Login: verifies credentials, rotates refresh token, returns tokens and user summary.
-
-Key files:
-- `schemas/users/authSchema.ts` – `Auth` model with `email`, `password`, `refreshToken`, `refreshTokenExpiresAt`
-- `services/users/authService.ts` – `registerService`, `loginService`
-- `controllers/users/authController.ts` – `registerController`, `loginController`
-- `middlewares/auth.ts` – `verify` middleware uses `SECRET_KEY`
-- `types/users/auth.ts` – DTOs for requests/responses
-
-### Validation
-- `validations/users/authValidations.ts`
-  - `registerValidation`: checks email format and password length (>= 8)
-  - `loginValidation`: requires valid email and non-empty password
-
-Integrate with routes via `express-validator` (example below).
-
-### Routing
-`src/routes/index.ts` mounts a user router under `/api/v1`. Wire your user routes in `src/routes/users/index.ts`:
-```ts
-import { Router } from 'express';
-import { registerController, loginController } from '../../controllers/users/authController.js';
-import { checkSchema } from 'express-validator';
-import { registerValidation, loginValidation } from '../../validations/users/authValidations.js';
-
-const router = Router();
-
-router.post('/register', checkSchema(registerValidation), registerController);
-router.post('/login', checkSchema(loginValidation), loginController);
-
-export default router;
-```
-Then mount it in `routes/index.ts`:
-```ts
-import { Router } from 'express';
-import buyerRouter from './users/index.js';
-
-const baseRoute = '/api/v1';
-const router = (app: any) => {
-  app.use(`${baseRoute}/buyers`, buyerRouter);
-};
-
-export default router;
-```
-
-### Email
-- Nodemailer + Handlebars: `src/modules/notifications/email.ts`
-  - Templates live in `src/modules/views/*.handlebars`
-  - Configure `EMAIL_USER` and `EMAIL_PASSWORD`
-- Brevo REST: `src/modules/notifications/brevo.ts`
-  - Requires `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `BREVO_API_URL`
-
-### File Uploads (Cloudinary)
-- Configure Cloudinary env vars
-- Use helper in `src/modules/storage/cloudinary.ts`
-
-### Utilities
-- `utils/index.ts` provides:
-  - `hashPassword`, `verifyPassword`
-  - `generateToken`, `verifyToken`
-  - `passwordValidator`, phone helpers
-  - `messageHandler` standardizes service responses
-
-### Scripts
 ```json
-{
-  "dev": "nodemon --watch \"src/**/*.ts\" --exec tsx src/index.ts",
-  "build": "tsc",
-  "start": "node dist/index.js"
-}
+{ "message": "...", "success": true, "statusCode": 200, "data": { } }
 ```
 
-### Environment and Types
-- Local type shim for `nodemailer-express-handlebars` at `src/types/nodemailer-express-handlebars.d.ts`.
-- Ensure `tsconfig.json` includes `src` (and `src/types`) within `include` so custom typings are picked up.
+Base path is `/api/v1`. The front end talks to `/api/*` on its own origin and
+Next rewrites it here, so session cookies work with no CORS.
 
-### Security Notes
-- Store secrets in `.env` (never commit)
-- Use strong `SECRET_KEY`
-- Prefer app-specific passwords for email providers
-- Rate-limit sensitive routes in production
+### Things worth knowing before you change anything
 
-### Health Check
-- GET `/` returns a simple message confirming the server is running.
+- **Money is an integer number of kobo**, never a float and never a decimal
+  string. `pg.defaults.parseInt8` is set in `database/db.ts` so `BIGINT`
+  columns arrive as numbers; without it every total would be string
+  concatenation.
+- **Stock is never a column.** A product's quantity is always the sum of its
+  batches, recomputed per request. There is no cached total to go stale.
+- **Expiry dates are `DATEONLY`,** handled as `YYYY-MM-DD` strings with
+  day-based arithmetic. Putting one through a timestamp lets a timezone shift
+  it by a day and mark a batch expired early.
+- **Nothing is deleted.** Sales are reversed through `/returns`, staff accounts
+  are disabled rather than removed, and the audit log has no write endpoint at
+  all. There is deliberately no `DELETE /sales`.
+- **FEFO is decided here, not in the browser.** `POST /sales` locks the
+  candidate batches, plans every line, and only then writes — so a sale that
+  cannot be filled changes nothing and the till can safely keep its cart.
 
-### Next Steps / Customization
-- Add refresh token endpoint and rotation policies
-- Add password reset and email verification flows
-- Extend models and relationships in Sequelize
-- Add integration tests and CI pipeline
+---
 
-### License
-ISC
+## Troubleshooting
 
+**`Could not reach postgres`** — postgres is not running, or `DB_PASSWORD` in
+`.env` is blank or wrong. That is the usual cause.
+
+**`/api/v1/health` returns 503** — the API is up but cannot reach the database.
+Same checks as above.
+
+**Everything returns 401** — you are not signed in. Every route except
+`/api/v1/health` and `/api/v1/auth/login` needs a session cookie.
+
+**Port 5000 already in use** — change `PORT` in `.env`, and update
+`API_PROXY_ORIGIN` in the front end's `.env.local` to match.

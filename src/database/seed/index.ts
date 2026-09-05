@@ -1,5 +1,7 @@
 import dotenv from "dotenv";
+import { QueryTypes } from "sequelize";
 import sequelize, { connectToDB } from "../db.js";
+import { config } from "../../config/config.js";
 import "../../schemas/index.js";
 import Category from "../../schemas/products/categorySchema.js";
 import Product from "../../schemas/products/productSchema.js";
@@ -117,8 +119,40 @@ const clearExistingData = async () => {
     await sequelize.query("ALTER SEQUENCE receipt_number_seq RESTART WITH 1");
 };
 
+/**
+ * Refuses to wipe a live pharmacy.
+ *
+ * This script truncates sales, returns, the stock ledger and the audit trail.
+ * On a developer's machine that is the point; on the pharmacy's server it
+ * would destroy the business records the whole system exists to keep. Running
+ * it there has to be a deliberate act, not a mistyped command.
+ */
+const assertSafeToSeed = async () => {
+    const force = process.argv.includes("--force");
+
+    if (config.server.env === "production" && !force) {
+        console.error("Refusing to seed: NODE_ENV is production.");
+        console.error("");
+        console.error("This would delete every sale, return, stock movement and audit entry.");
+        console.error("If you genuinely mean to reset a production database, re-run with --force.");
+        process.exit(1);
+    }
+
+    const [row] = await sequelize.query<{ count: string }>(
+        "SELECT COUNT(*)::text AS count FROM sales",
+        { type: QueryTypes.SELECT }
+    ).catch(() => [{ count: "0" }]);
+
+    const existing = Number(row?.count ?? 0);
+    if (existing > 0) {
+        console.log(`Replacing existing data (${existing.toLocaleString()} sales will be deleted).`);
+    }
+};
+
 const seed = async () => {
     await connectToDB();
+
+    await assertSafeToSeed();
 
     console.log("Clearing existing data...");
     await clearExistingData();

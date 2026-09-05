@@ -1,18 +1,19 @@
 {
-  "name": "quick_serve_typescript",
+  "name": "mustan-pharmacy-api",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node dist/index.js",
+    "setup": "tsx src/database/setup.ts && tsx src/database/seed/index.ts",
+    "db:create": "tsx src/database/setup.ts",
+    "seed": "tsx src/database/seed/index.ts",
     "dev": "nodemon --watch \"src/**/*.ts\" --exec tsx src/index.ts",
     "build": "tsc",
-    "postinstall": "tsc",
-    "seed": "tsx src/database/seed/index.ts"
+    "start": "node dist/index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Pharmacy POS & inventory API for Mustan Healthcare Pharmacy.",
   "dependencies": {
     "@types/bcrypt": "^6.0.0",
     "axios": "^1.9.0",
