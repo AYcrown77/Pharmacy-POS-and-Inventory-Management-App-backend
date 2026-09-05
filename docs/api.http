@@ -1,0 +1,434 @@
+# Mustan Healthcare Pharmacy — API
+#
+# Open in VS Code with the REST Client extension and click 'Send Request'
+# above any block. Run Login first — the session cookie is reused for the
+# rest of the file, and Logout at the very bottom ends it.
+#
+# Money is an integer number of kobo throughout: 80000 is ₦800.00.
+#
+# The write requests really do change the database — they create a product,
+# receive stock, ring up a sale and add a user. Run `pnpm seed` afterwards to
+# put the shop back to its clean state.
+
+@baseUrl = http://localhost:5000/api/v1
+
+# REST Client cannot capture ids from responses, so paste them in as you go.
+# (The Postman collection fills these in for you if you would rather not.)
+@batchId = REPLACE_ME
+@categoryId = REPLACE_ME
+@newBatchId = REPLACE_ME
+@newCategoryId = REPLACE_ME
+@newProductId = REPLACE_ME
+@newUserId = REPLACE_ME
+@productId = REPLACE_ME
+@receiptNumber = REPLACE_ME
+@saleId = REPLACE_ME
+@saleItemId = REPLACE_ME
+@userId = REPLACE_ME
+
+
+### ==================================================================
+### Auth & health
+### ==================================================================
+
+### Login (run this first)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Pharmacy@2026",
+  "terminalId": "trm-01"
+}
+
+### Current session
+GET {{baseUrl}}/auth/session
+
+### Health (no auth needed)
+GET {{baseUrl}}/health
+
+
+### ==================================================================
+### Products & categories
+### ==================================================================
+
+### List products
+GET {{baseUrl}}/products?page=1&pageSize=20&sortBy=name&sortDir=asc
+
+### List products — filtered
+GET {{baseUrl}}/products?search=para&stockStatus=IN_STOCK
+
+### Get product
+GET {{baseUrl}}/products/{{productId}}
+
+### Search (POS box)
+GET {{baseUrl}}/products/search?q=para&limit=10
+
+### Lookup by barcode
+GET {{baseUrl}}/products/barcode/6151234567890
+
+### Sale lookup (FEFO preview)
+GET {{baseUrl}}/products/sale-lookup/6151234567890
+
+### Batches for product
+GET {{baseUrl}}/products/{{productId}}/batches
+
+### List categories
+GET {{baseUrl}}/categories
+
+### Create product [admin]
+POST {{baseUrl}}/products
+Content-Type: application/json
+
+{
+  "name": "Test Product",
+  "genericName": null,
+  "brandName": null,
+  "barcode": "9999999999999",
+  "categoryId": "{{categoryId}}",
+  "strength": null,
+  "dosageForm": "TABLET",
+  "sellingPrice": 123400,
+  "minimumStockLevel": 5,
+  "unitType": "PACK",
+  "isActive": true
+}
+
+### Update product [admin]
+PATCH {{baseUrl}}/products/{{newProductId}}
+Content-Type: application/json
+
+{
+  "name": "Test Product (edited)",
+  "genericName": null,
+  "brandName": null,
+  "barcode": "9999999999999",
+  "categoryId": "{{categoryId}}",
+  "strength": null,
+  "dosageForm": "TABLET",
+  "sellingPrice": 150000,
+  "minimumStockLevel": 5,
+  "unitType": "PACK",
+  "isActive": true
+}
+
+### Create category [admin]
+POST {{baseUrl}}/categories
+Content-Type: application/json
+
+{
+  "name": "Test Category",
+  "description": "Created from the collection"
+}
+
+### Update category [admin]
+PATCH {{baseUrl}}/categories/{{newCategoryId}}
+Content-Type: application/json
+
+{
+  "name": "Test Category II",
+  "description": "Renamed"
+}
+
+### Delete category [admin]
+DELETE {{baseUrl}}/categories/{{newCategoryId}}
+
+
+### ==================================================================
+### Inventory
+### ==================================================================
+
+### List inventory
+GET {{baseUrl}}/inventory?page=1&pageSize=20
+
+### Inventory — low stock only
+GET {{baseUrl}}/inventory?stockStatus=LOW_STOCK
+
+### Inventory summary
+GET {{baseUrl}}/inventory/summary
+
+### Low stock
+GET {{baseUrl}}/inventory/low-stock?limit=10
+
+### Expiry alerts
+GET {{baseUrl}}/inventory/expiry-alerts?limit=10
+
+### Expiring (paginated)
+GET {{baseUrl}}/inventory/expiring?page=1&pageSize=20
+
+### Expiry summary
+GET {{baseUrl}}/inventory/expiry-summary
+
+### List batches
+GET {{baseUrl}}/batches?page=1&pageSize=20&onlyInStock=true
+
+### Get batch
+GET {{baseUrl}}/batches/{{batchId}}
+
+### Stock ledger
+GET {{baseUrl}}/stock-movements?page=1&pageSize=20
+
+### Recent movements
+GET {{baseUrl}}/stock-movements/recent?limit=10
+
+### Suppliers
+GET {{baseUrl}}/suppliers
+
+
+### ==================================================================
+### Stock operations
+### ==================================================================
+
+### Receive stock [admin]
+POST {{baseUrl}}/stock/receive
+Content-Type: application/json
+
+{
+  "productId": "{{productId}}",
+  "batchNumber": "TEST001",
+  "expiryDate": "2028-06-30",
+  "quantityReceived": 60,
+  "costPrice": 60000,
+  "sellingPrice": 80000,
+  "supplierName": "Emzor Pharmaceuticals",
+  "receivedAt": "2026-09-05"
+}
+
+### Adjust stock [admin]
+POST {{baseUrl}}/stock/adjustments
+Content-Type: application/json
+
+{
+  "batchId": "{{newBatchId}}",
+  "adjustment": -2,
+  "reason": "DAMAGED",
+  "notes": "Crushed in transit"
+}
+
+### List adjustments [admin]
+GET {{baseUrl}}/stock/adjustments?page=1&pageSize=20
+
+
+### ==================================================================
+### Sales
+### ==================================================================
+
+### Complete a sale
+POST {{baseUrl}}/sales
+Content-Type: application/json
+
+{
+  "lines": [
+    {
+      "productId": "{{productId}}",
+      "quantity": 2
+    }
+  ],
+  "discount": 0,
+  "paymentMethod": "CASH",
+  "amountReceived": 1000000,
+  "terminalId": "trm-01"
+}
+
+### List sales
+GET {{baseUrl}}/sales?page=1&pageSize=20
+
+### List sales — filtered
+GET {{baseUrl}}/sales?from=2026-08-01&to=2026-09-05&paymentMethod=CASH
+
+### Get sale
+GET {{baseUrl}}/sales/{{saleId}}
+
+### Find by receipt number
+GET {{baseUrl}}/sales/receipt/{{receiptNumber}}
+
+### Recent sales
+GET {{baseUrl}}/sales/recent?limit=8
+
+### Reversal history for a sale
+GET {{baseUrl}}/sales/{{saleId}}/returns
+
+
+### ==================================================================
+### Returns
+### ==================================================================
+
+### Process a return
+POST {{baseUrl}}/returns
+Content-Type: application/json
+
+{
+  "saleId": "{{saleId}}",
+  "items": [
+    {
+      "saleItemId": "{{saleItemId}}",
+      "quantity": 1
+    }
+  ],
+  "reason": "Customer changed mind",
+  "refundMethod": "CASH"
+}
+
+### List returns
+GET {{baseUrl}}/returns?page=1&pageSize=20
+
+
+### ==================================================================
+### Reports [admin]
+### ==================================================================
+
+### Dashboard summary
+GET {{baseUrl}}/reports/dashboard
+
+### Sales trend (last N days)
+GET {{baseUrl}}/reports/sales-trend?days=7
+
+### Payment mix
+GET {{baseUrl}}/reports/payment-mix?days=7
+
+### Sales summary
+GET {{baseUrl}}/reports/sales/summary?from=2026-08-01&to=2026-09-05
+
+### Sales trend (range)
+GET {{baseUrl}}/reports/sales/trend?from=2026-08-01&to=2026-09-05
+
+### Cashier report
+GET {{baseUrl}}/reports/cashiers?from=2026-08-01&to=2026-09-05
+
+### Movement summary
+GET {{baseUrl}}/reports/stock-movements/summary?from=2026-08-01&to=2026-09-05
+
+
+### ==================================================================
+### Users [admin]
+### ==================================================================
+
+### List users
+GET {{baseUrl}}/users?page=1&pageSize=20
+
+### Get user
+GET {{baseUrl}}/users/{{userId}}
+
+### Create user
+POST {{baseUrl}}/users
+Content-Type: application/json
+
+{
+  "name": "Amina Yusuf",
+  "username": "amina",
+  "role": "CASHIER",
+  "password": "Pharmacy@2026"
+}
+
+### Update user
+PATCH {{baseUrl}}/users/{{newUserId}}
+Content-Type: application/json
+
+{
+  "name": "Amina Yusuf-Bello",
+  "username": "amina",
+  "role": "CASHIER"
+}
+
+### Disable user
+PATCH {{baseUrl}}/users/{{newUserId}}/status
+Content-Type: application/json
+
+{
+  "isActive": false
+}
+
+### Reset password
+POST {{baseUrl}}/users/{{newUserId}}/password
+Content-Type: application/json
+
+{
+  "password": "NewPassword2026"
+}
+
+
+### ==================================================================
+### System
+### ==================================================================
+
+### Get settings
+GET {{baseUrl}}/settings
+
+### Update settings [admin]
+PUT {{baseUrl}}/settings
+Content-Type: application/json
+
+{
+  "name": "Mustan Healthcare Pharmacy",
+  "address": "12 Ahmadu Bello Way, Kaduna, Nigeria",
+  "phone": "+234 803 000 0000",
+  "receiptFooter": "Your Health, Our Priority",
+  "showLogoOnReceipt": true,
+  "lowStockAlertsEnabled": true,
+  "expiryAlertDays": 90
+}
+
+### List terminals
+GET {{baseUrl}}/terminals
+
+### Audit trail [admin]
+GET {{baseUrl}}/audit?page=1&pageSize=20
+
+### Audit entity types [admin]
+GET {{baseUrl}}/audit/entity-types
+
+
+### ==================================================================
+### Error cases
+### ==================================================================
+
+### 422 — malformed body
+POST {{baseUrl}}/sales
+Content-Type: application/json
+
+{
+  "lines": [],
+  "paymentMethod": "BITCOIN"
+}
+
+### 409 — insufficient stock
+POST {{baseUrl}}/sales
+Content-Type: application/json
+
+{
+  "lines": [
+    {
+      "productId": "{{productId}}",
+      "quantity": 999999
+    }
+  ],
+  "discount": 0,
+  "paymentMethod": "CASH",
+  "amountReceived": 999999999,
+  "terminalId": "trm-01"
+}
+
+### 400 — cash short of the total
+POST {{baseUrl}}/sales
+Content-Type: application/json
+
+{
+  "lines": [
+    {
+      "productId": "{{productId}}",
+      "quantity": 1
+    }
+  ],
+  "discount": 0,
+  "paymentMethod": "CASH",
+  "amountReceived": 1,
+  "terminalId": "trm-01"
+}
+
+
+### ==================================================================
+### Sign out (run last)
+### ==================================================================
+
+### Logout — ends the session for everything above
+POST {{baseUrl}}/auth/logout

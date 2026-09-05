@@ -6,6 +6,9 @@ no internet is needed for daily operation.
 
 The front end lives beside this repo in `mustaan-frontend`.
 
+**Endpoint reference: [API.md](API.md)** — every route with request bodies you
+can paste straight into curl, Postman or the REST Client.
+
 ---
 
 ## Getting started
