@@ -222,12 +222,17 @@ const seed = async () => {
             categoryId: categoryIdBySlug.get(item.categorySlug)!,
             strength: item.strength,
             dosageForm: item.dosageForm,
-            // The catalogue figure is the walk-in price. Trade buyers pay
-            // less: roughly 12% off for a shop, 20% off for a distributor,
-            // rounded to whole naira so the till never deals in part-kobo.
+            // The catalogue figure is the walk-in price for ONE unit. Retail
+            // and wholesale are priced per pack, so they scale by the pack
+            // size before the trade discount — roughly 12% off for a shop and
+            // 20% for a distributor. Without the pack multiplier a box of 24
+            // would come out cheaper than a single tablet.
             priceConsumer: item.sellingPrice,
-            priceRetail: Math.round((item.sellingPrice * 0.88) / 100) * 100,
-            priceWholesale: Math.round((item.sellingPrice * 0.8) / 100) * 100,
+            priceRetail:
+                Math.round((item.sellingPrice * item.unitsPerPack * 0.88) / 100) * 100,
+            priceWholesale:
+                Math.round((item.sellingPrice * item.unitsPerPack * 0.8) / 100) * 100,
+            unitsPerPack: item.unitsPerPack,
             minimumStockLevel: item.minimumStockLevel,
             unitType: item.unitType,
             isActive: true,

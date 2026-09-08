@@ -54,6 +54,7 @@ export interface SeedProduct {
     strength: string | null;
     dosageForm: DosageForm | null;
     sellingPrice: number;
+    unitsPerPack: number;
     minimumStockLevel: number;
     unitType: UnitType;
 }
@@ -69,7 +70,10 @@ const product = (
     dosageForm: DosageForm | null,
     priceNaira: number,
     minimumStockLevel: number,
-    unitType: UnitType = "PACK"
+    unitType: UnitType = "PACK",
+    // How many singles are in a pack. Tablets and sachets come in cards or
+    // boxes; a bottle or an inhaler is sold whole, so it stays at 1.
+    unitsPerPack = 1
 ): SeedProduct => ({
     slug,
     name,
@@ -80,20 +84,21 @@ const product = (
     strength,
     dosageForm,
     sellingPrice: kobo(priceNaira),
+    unitsPerPack,
     minimumStockLevel,
     unitType,
 });
 
 export const SEED_PRODUCTS: SeedProduct[] = [
     // Analgesics
-    product("prd-001", "Paracetamol 500mg", "Paracetamol", "Emzor", "6151234567890", "analgesics", "500mg", "TABLET", 800, 15),
-    product("prd-002", "Panadol Extra", "Paracetamol + Caffeine", "Panadol", "6151234567891", "analgesics", "500mg/65mg", "TABLET", 1500, 20),
+    product("prd-001", "Paracetamol 500mg", "Paracetamol", "Emzor", "6151234567890", "analgesics", "500mg", "TABLET", 800, 15, "PACK", 24),
+    product("prd-002", "Panadol Extra", "Paracetamol + Caffeine", "Panadol", "6151234567891", "analgesics", "500mg/65mg", "TABLET", 1500, 20, "PACK", 20),
     product("prd-003", "Ibuprofen 400mg", "Ibuprofen", "Emzor", "6151234567892", "analgesics", "400mg", "TABLET", 1200, 15),
     product("prd-004", "Diclofenac 50mg", "Diclofenac Sodium", "Cataflam", "6151234567893", "analgesics", "50mg", "TABLET", 1800, 10),
     product("prd-005", "Aspirin 75mg", "Acetylsalicylic Acid", "Ecotrin", "6151234567894", "analgesics", "75mg", "TABLET", 900, 12),
 
     // Antibiotics
-    product("prd-010", "Amoxicillin 500mg", "Amoxicillin", "Emzor", "6151234567900", "antibiotics", "500mg", "CAPSULE", 2000, 20),
+    product("prd-010", "Amoxicillin 500mg", "Amoxicillin", "Emzor", "6151234567900", "antibiotics", "500mg", "CAPSULE", 2000, 20, "PACK", 20),
     product("prd-011", "Augmentin 625mg", "Amoxicillin + Clavulanate", "Augmentin", "6151234567901", "antibiotics", "625mg", "TABLET", 8500, 10),
     product("prd-012", "Ciprofloxacin 500mg", "Ciprofloxacin", "Ciprotab", "6151234567902", "antibiotics", "500mg", "TABLET", 2500, 12),
     product("prd-013", "Metronidazole 400mg", "Metronidazole", "Flagyl", "6151234567903", "antibiotics", "400mg", "TABLET", 1200, 15),
@@ -117,7 +122,7 @@ export const SEED_PRODUCTS: SeedProduct[] = [
     product("prd-040", "Omeprazole 20mg", "Omeprazole", "Losec", "6151234567930", "gastro", "20mg", "CAPSULE", 2400, 12),
     product("prd-041", "Gestid Suspension", "Antacid", "Gestid", "6151234567931", "gastro", "200ml", "SUSPENSION", 1900, 10, "BOTTLE"),
     product("prd-042", "Buscopan 10mg", "Hyoscine Butylbromide", "Buscopan", "6151234567932", "gastro", "10mg", "TABLET", 2600, 10),
-    product("prd-043", "ORS Sachet", "Oral Rehydration Salts", "Emzor", "6151234567933", "gastro", "20.5g", "POWDER", 300, 40, "SACHET"),
+    product("prd-043", "ORS Sachet", "Oral Rehydration Salts", "Emzor", "6151234567933", "gastro", "20.5g", "POWDER", 300, 40, "SACHET", 10),
 
     // Respiratory
     product("prd-050", "Ventolin Inhaler", "Salbutamol", "Ventolin", "6151234567940", "respiratory", "100mcg", "INHALER", 6500, 6, "PIECE"),

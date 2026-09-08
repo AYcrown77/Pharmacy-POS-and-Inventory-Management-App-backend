@@ -14,6 +14,7 @@ export interface ProductInput {
     priceWholesale: number;
     priceRetail: number;
     priceConsumer: number;
+    unitsPerPack: number;
     minimumStockLevel: number;
     unitType: UnitType;
     isActive: boolean;
@@ -36,6 +37,7 @@ export interface ProductListItem {
     priceWholesale: number;
     priceRetail: number;
     priceConsumer: number;
+    unitsPerPack: number;
     minimumStockLevel: number;
     unitType: UnitType;
     isActive: boolean;

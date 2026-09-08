@@ -137,8 +137,14 @@ export const processReturnService = async (
                 transaction,
             });
 
+            // The line counts selling units; the shelf counts base units. A
+            // returned pack of 24 puts 24 back, not one — getting this wrong
+            // would quietly destroy stock every time a trade buyer returned
+            // something.
+            const baseReturned = quantity * (saleItem.unitsPerSaleUnit || 1);
+
             const previousQuantity = batch?.quantityRemaining ?? 0;
-            const newQuantity = previousQuantity + quantity;
+            const newQuantity = previousQuantity + baseReturned;
 
             if (batch) {
                 await batch.update({ quantityRemaining: newQuantity }, { transaction });
@@ -163,7 +169,7 @@ export const processReturnService = async (
                 batchId: saleItem.batchId,
                 batchNumber: saleItem.batchNumber,
                 movementType: "RETURN",
-                quantity,
+                quantity: baseReturned,
                 previousQuantity,
                 newQuantity,
                 referenceType: "RETURN",

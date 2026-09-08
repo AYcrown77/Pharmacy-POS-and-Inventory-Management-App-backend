@@ -80,6 +80,16 @@ export const productValidation = {
         },
         toInt: true,
     },
+    unitsPerPack: {
+        // 1 means the product is not broken down at all.
+        in: 'body',
+        optional: true,
+        isInt: {
+            options: { min: 1, max: 10000 },
+            errorMessage: 'Units per pack must be at least 1',
+        },
+        toInt: true,
+    },
     minimumStockLevel: {
         in: 'body',
         isInt: {

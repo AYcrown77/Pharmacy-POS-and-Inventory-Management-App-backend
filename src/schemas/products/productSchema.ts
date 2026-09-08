@@ -32,6 +32,24 @@ export type PriceTier = (typeof PRICE_TIERS)[number];
 /** The tier the till starts on — the walk-in price, which is most sales. */
 export const DEFAULT_PRICE_TIER: PriceTier = "CONSUMER";
 
+/**
+ * Which unit a tier trades in.
+ *
+ * A walk-in buys one sachet; a shop or a distributor buys the pack it came in.
+ * So the tier decides both the price and what a "quantity of 1" means, and the
+ * two can never disagree — which they would if the unit were a separate choice
+ * the cashier had to keep in step with the price list.
+ *
+ * Stock itself is always counted in the smallest unit. A pack sale deducts
+ * `unitsPerPack` of them, so there is one honest number for what is on the
+ * shelf however it was sold.
+ */
+export const TIER_SELLS_PACKS: Record<PriceTier, boolean> = {
+    WHOLESALE: true,
+    RETAIL: true,
+    CONSUMER: false,
+};
+
 // What one unit of stock represents
 export const UNIT_TYPES = [
     "PACK",
@@ -58,6 +76,7 @@ export interface ProductAttributes {
     priceWholesale: number;
     priceRetail: number;
     priceConsumer: number;
+    unitsPerPack: number;
     minimumStockLevel: number;
     unitType: UnitType;
     isActive: boolean;
@@ -93,6 +112,7 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
     declare priceWholesale: number;
     declare priceRetail: number;
     declare priceConsumer: number;
+    declare unitsPerPack: number;
     declare minimumStockLevel: number;
     declare unitType: UnitType;
     declare isActive: boolean;
@@ -159,6 +179,15 @@ export const ProductSchema = {
         type: DataTypes.BIGINT,
         allowNull: false,
     },
+    unitsPerPack: {
+        // How many of the smallest unit make up one pack. 1 means the product
+        // is not broken down at all — an inhaler, a bottle — and pack and
+        // sachet are then the same thing, which keeps every existing product
+        // working untouched.
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 1,
+    },
     minimumStockLevel: {
         type: DataTypes.INTEGER,
         allowNull: false,
@@ -203,6 +232,30 @@ Category.hasMany(Product, { foreignKey: "categoryId", as: "products" });
  * in one function rather than a hunt for `product.priceRetail` across the
  * codebase.
  */
+export interface TierPricing {
+    /** Price of one selling unit, in kobo. */
+    unitPrice: number;
+    /** Base units consumed per selling unit — the pack size, or 1. */
+    baseUnits: number;
+    sellsPacks: boolean;
+}
+
+/**
+ * What one unit costs and consumes at a given tier.
+ *
+ * Every place that charges or deducts goes through here, so the price and the
+ * stock movement can never be computed from different assumptions about what
+ * was actually sold.
+ */
+export const pricingForTier = (product: Product, tier: PriceTier): TierPricing => {
+    const sellsPacks = TIER_SELLS_PACKS[tier];
+    return {
+        unitPrice: priceForTier(product, tier),
+        baseUnits: sellsPacks ? Math.max(product.unitsPerPack, 1) : 1,
+        sellsPacks,
+    };
+};
+
 export const priceForTier = (product: Product, tier: PriceTier): number => {
     switch (tier) {
         case "WHOLESALE":

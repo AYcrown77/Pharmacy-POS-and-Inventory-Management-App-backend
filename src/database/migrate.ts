@@ -105,6 +105,17 @@ const steps: Step[] = [
             // what these defaults say — so no backfill is needed.
         ],
     },
+    {
+        name: "products: pack size, sale items: unit size",
+        appliesWhen: async () => !(await hasColumn("products", "unitsPerPack")),
+        sql: [
+            // 1 means the product is not broken down at all, which is what
+            // every existing product is until someone says otherwise — so the
+            // default alone is a correct backfill.
+            `ALTER TABLE products ADD COLUMN IF NOT EXISTS "unitsPerPack" INTEGER NOT NULL DEFAULT 1`,
+            `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS "unitsPerSaleUnit" INTEGER NOT NULL DEFAULT 1`,
+        ],
+    },
 ];
 
 const migrate = async () => {

@@ -11,6 +11,7 @@ export interface SaleItemAttributes {
     batchId: string;
     batchNumber: string;
     quantity: number;
+    unitsPerSaleUnit: number;
     unitPrice: number;
     subtotal: number;
     returnedQuantity: number;
@@ -20,7 +21,7 @@ export interface SaleItemAttributes {
 
 // This is the creation attributes for the SaleItem model
 export interface SaleItemCreationAttributes
-    extends Optional<SaleItemAttributes, "id" | "returnedQuantity" | "createdAt" | "updatedAt"> {}
+    extends Optional<SaleItemAttributes, "id" | "unitsPerSaleUnit" | "returnedQuantity" | "createdAt" | "updatedAt"> {}
 
 // This is the model for the SaleItem model
 export class SaleItem extends Model<SaleItemAttributes, SaleItemCreationAttributes> implements SaleItemAttributes {
@@ -31,6 +32,7 @@ export class SaleItem extends Model<SaleItemAttributes, SaleItemCreationAttribut
     declare batchId: string;
     declare batchNumber: string;
     declare quantity: number;
+    declare unitsPerSaleUnit: number;
     declare unitPrice: number;
     declare subtotal: number;
     declare returnedQuantity: number;
@@ -72,6 +74,16 @@ export const SaleItemSchema = {
     quantity: {
         type: DataTypes.INTEGER,
         allowNull: false,
+    },
+    unitsPerSaleUnit: {
+        // Base units in one unit of this line: the pack size when a pack was
+        // sold, 1 when a single was. Recorded rather than looked up, because
+        // changing a product's pack size later must not silently rewrite how
+        // much stock an old sale took off the shelf — or how much a return
+        // puts back.
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 1,
     },
     unitPrice: {
         // Captured at the time of sale. Repricing the product later must not

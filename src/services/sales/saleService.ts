@@ -6,7 +6,7 @@ import SaleReturn from "../../schemas/sales/saleReturnSchema.js";
 import Batch from "../../schemas/inventory/batchSchema.js";
 import Product, {
     DEFAULT_PRICE_TIER,
-    priceForTier,
+    pricingForTier,
 } from "../../schemas/products/productSchema.js";
 import Terminal from "../../schemas/system/terminalSchema.js";
 import Customer from "../../schemas/customers/customerSchema.js";
@@ -120,12 +120,23 @@ export const completeSaleService = async (
         const priceTier = input.priceTier ?? DEFAULT_PRICE_TIER;
 
         const asOf = today();
-        const plan: Array<{ product: Product; allocations: FefoAllocation[] }> = [];
+        const plan: Array<{
+            product: Product;
+            allocations: FefoAllocation[];
+            pricing: ReturnType<typeof pricingForTier>;
+        }> = [];
         const batchById = new Map<string, Batch>();
 
         for (const productId of productIds) {
             const product = productById.get(productId)!;
-            const wanted = lineByProduct.get(productId)!;
+            const pricing = pricingForTier(product, priceTier);
+
+            // The cart counts in whatever the tier sells — packs for a trade
+            // buyer, singles for a walk-in. The shelf counts in singles only,
+            // so the two are reconciled here, once, before anything is locked
+            // or deducted.
+            const wantedSaleUnits = lineByProduct.get(productId)!;
+            const wanted = wantedSaleUnits * pricing.baseUnits;
 
             // FEFO order, locked for the length of the transaction so another
             // terminal cannot sell the same units between the check and the
@@ -144,50 +155,78 @@ export const completeSaleService = async (
                 transaction,
             });
 
+            /*
+             * FEFO, counted in selling units.
+             *
+             * A pack is a sealed box that came from one batch, so a pack is
+             * only ever drawn whole from a single batch — never assembled from
+             * the tail of one and the start of another. That keeps the line's
+             * arithmetic exact (an integer number of packs at an integer
+             * price) and matches what is physically on the shelf. A batch with
+             * fewer than a full pack left still sells as singles at the
+             * consumer tier, where `baseUnits` is 1 and this degenerates to
+             * the plain behaviour it always had.
+             */
             const allocations: FefoAllocation[] = [];
-            let outstanding = wanted;
+            const perBatchTaken = new Map<string, number>();
+            let outstanding = wantedSaleUnits;
 
             for (const batch of batches) {
                 if (outstanding <= 0) break;
-                const take = Math.min(batch.quantityRemaining, outstanding);
+
+                const takenAlready = perBatchTaken.get(batch.id) ?? 0;
+                const spare = batch.quantityRemaining - takenAlready * pricing.baseUnits;
+                const canTake = Math.min(Math.floor(spare / pricing.baseUnits), outstanding);
+                if (canTake <= 0) continue;
+
                 allocations.push({
                     batchId: batch.id,
                     batchNumber: batch.batchNumber,
-                    quantity: take,
+                    quantity: canTake,
                     expiryDate: batch.expiryDate,
                 });
+                perBatchTaken.set(batch.id, takenAlready + canTake);
                 batchById.set(batch.id, batch);
-                outstanding -= take;
+                outstanding -= canTake;
             }
 
             if (outstanding > 0) {
+                // Reported in the unit the cashier is working in: telling
+                // someone selling packs that "17 units" are available when
+                // they asked for 2 packs is not an answer they can act on.
+                const availableSaleUnits = wantedSaleUnits - outstanding;
+                const availableBase = availableSaleUnits * pricing.baseUnits;
+                const noun = pricing.sellsPacks ? "pack" : "unit";
+
                 await transaction.rollback();
                 return callback(
                     messageHandler(
-                        `Only ${wanted - outstanding} unit(s) of ${product.name} are available.`,
+                        `Only ${availableSaleUnits} ${noun}${availableSaleUnits === 1 ? "" : "s"} of ${product.name} are available.`,
                         false,
                         CONFLICT,
                         {
                             code: "INSUFFICIENT_STOCK",
                             productId,
-                            requested: wanted,
-                            available: wanted - outstanding,
+                            requested: wantedSaleUnits,
+                            available: availableSaleUnits,
+                            baseUnitsAvailable: availableBase,
                         }
                     )
                 );
             }
 
-            plan.push({ product, allocations });
+            plan.push({ product, allocations, pricing });
         }
 
         // Every line is satisfiable — from here on the sale is being written.
+        // Allocations are counted in selling units, so this is a plain
+        // multiplication — no division, and therefore no fractional kobo.
         const subtotal = plan.reduce(
             (total, entry) =>
                 total +
                 entry.allocations.reduce(
                     (lineTotal, allocation) =>
-                        lineTotal +
-                        priceForTier(entry.product, priceTier) * allocation.quantity,
+                        lineTotal + entry.pricing.unitPrice * allocation.quantity,
                     0
                 ),
             0
@@ -211,7 +250,11 @@ export const completeSaleService = async (
             return callback(messageHandler("Customer not found.", false, NOT_FOUND, {}));
         }
 
-        const received = input.paymentMethod === "CASH" ? input.amountReceived : null;
+        // Every method records what was actually handed over, not just cash.
+        // A card or transfer can fall short of the total just as a handful of
+        // notes can, and the shortfall has to be able to become debt — which
+        // it cannot if the amount is thrown away for anything but cash.
+        const received = input.amountReceived ?? null;
 
         /*
          * How money short or over is settled.
@@ -289,8 +332,13 @@ export const completeSaleService = async (
 
             for (const allocation of entry.allocations) {
                 const batch = batchById.get(allocation.batchId)!;
+                const { unitPrice, baseUnits } = entry.pricing;
+
+                // The allocation is in selling units; the shelf moves in base
+                // units. One pack of 24 leaving is 24 fewer on the shelf.
+                const baseTaken = allocation.quantity * baseUnits;
                 const previousQuantity = batch.quantityRemaining;
-                const newQuantity = previousQuantity - allocation.quantity;
+                const newQuantity = previousQuantity - baseTaken;
 
                 await batch.update({ quantityRemaining: newQuantity }, { transaction });
 
@@ -301,10 +349,11 @@ export const completeSaleService = async (
                     batchId: batch.id,
                     batchNumber: batch.batchNumber,
                     quantity: allocation.quantity,
+                    unitsPerSaleUnit: baseUnits,
                     // The price at the moment of sale. A later price change
                     // must not rewrite what this receipt says was charged.
-                    unitPrice: priceForTier(product, priceTier),
-                    subtotal: priceForTier(product, priceTier) * allocation.quantity,
+                    unitPrice,
+                    subtotal: unitPrice * allocation.quantity,
                     returnedQuantity: 0,
                 });
 
@@ -314,7 +363,7 @@ export const completeSaleService = async (
                     batchId: batch.id,
                     batchNumber: batch.batchNumber,
                     movementType: "SALE",
-                    quantity: -allocation.quantity,
+                    quantity: -baseTaken,
                     previousQuantity,
                     newQuantity,
                     referenceType: "SALE",

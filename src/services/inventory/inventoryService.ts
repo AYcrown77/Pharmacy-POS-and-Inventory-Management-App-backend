@@ -44,6 +44,7 @@ const toProductItem = (product: Product, available: number): ProductListItem => 
     priceWholesale: product.priceWholesale,
     priceRetail: product.priceRetail,
     priceConsumer: product.priceConsumer,
+    unitsPerPack: product.unitsPerPack,
     minimumStockLevel: product.minimumStockLevel,
     unitType: product.unitType,
     isActive: product.isActive,
