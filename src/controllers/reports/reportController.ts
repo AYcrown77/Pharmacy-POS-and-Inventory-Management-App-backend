@@ -6,6 +6,7 @@ import {
     getPaymentMixService,
     getCashierReportService,
     getMovementSummaryService,
+    getDebtorsReportService,
 } from "../../services/reports/reportService.js";
 import { getDashboardSummaryService } from "../../services/reports/dashboardService.js";
 import { MovementReportQuery, SalesReportQuery } from "../../types/reports/report.js";
@@ -54,6 +55,12 @@ export const cashierReportController = async (req: Request, res: Response) => {
 
 export const movementSummaryController = async (req: Request, res: Response) => {
     await getMovementSummaryService(req.query as MovementReportQuery, (result) => {
+        return res.status(result.statusCode).json(result);
+    });
+};
+
+export const debtorsReportController = async (_req: Request, res: Response) => {
+    await getDebtorsReportService((result) => {
         return res.status(result.statusCode).json(result);
     });
 };

@@ -15,6 +15,9 @@ import SaleItem from "./sales/saleItemSchema.js";
 import SaleReturn from "./sales/saleReturnSchema.js";
 import SaleReturnItem from "./sales/saleReturnItemSchema.js";
 
+import Customer from "./customers/customerSchema.js";
+import CustomerLedgerEntry from "./customers/customerLedgerSchema.js";
+
 import Auth from "./users/authSchema.js";
 import AuditLog from "./system/auditLogSchema.js";
 import Setting from "./system/settingSchema.js";
@@ -30,6 +33,8 @@ export {
     SaleItem,
     SaleReturn,
     SaleReturnItem,
+    Customer,
+    CustomerLedgerEntry,
     Auth,
     AuditLog,
     Setting,

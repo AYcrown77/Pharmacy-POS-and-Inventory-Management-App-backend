@@ -54,13 +54,29 @@ export const productValidation = {
             errorMessage: 'Unknown dosage form',
         },
     },
-    sellingPrice: {
+    priceWholesale: {
         // Kobo, so a whole number. A price arriving as 1500.5 would mean half
         // a kobo, which cannot be charged or given as change.
         in: 'body',
         isInt: {
             options: { min: 0 },
-            errorMessage: 'Selling price must be a whole number of kobo',
+            errorMessage: 'Wholesale price must be a whole number of kobo',
+        },
+        toInt: true,
+    },
+    priceRetail: {
+        in: 'body',
+        isInt: {
+            options: { min: 0 },
+            errorMessage: 'Retail price must be a whole number of kobo',
+        },
+        toInt: true,
+    },
+    priceConsumer: {
+        in: 'body',
+        isInt: {
+            options: { min: 0 },
+            errorMessage: 'Consumer price must be a whole number of kobo',
         },
         toInt: true,
     },

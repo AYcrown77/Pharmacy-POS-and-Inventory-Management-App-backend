@@ -1,4 +1,5 @@
 import { PaymentMethod, SaleStatus } from "../../schemas/sales/saleSchema.js";
+import { PriceTier } from "../../schemas/products/productSchema.js";
 import { BaseResponse } from "../users/auth.js";
 
 export interface CompleteSaleLine {
@@ -10,7 +11,11 @@ export interface CompleteSaleInput {
     lines: CompleteSaleLine[];
     discount: number;
     paymentMethod: PaymentMethod;
+    /** Which price list to charge. Defaults to the walk-in consumer price. */
+    priceTier?: PriceTier;
     amountReceived: number | null;
+    /** Attaching an account lets an underpayment become debt. */
+    customerId?: string | null;
     terminalId: string;
 }
 

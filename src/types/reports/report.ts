@@ -61,4 +61,14 @@ export interface MovementReportSummary {
     netUnits: number;
 }
 
+export interface DebtorRow {
+    customerId: string;
+    customerName: string;
+    phone: string | null;
+    balance: number;
+    /** Days since money last came in against this account. */
+    daysSinceLastPayment: number | null;
+    lastActivityAt: Date | null;
+}
+
 export type ReportResponse = BaseResponse;

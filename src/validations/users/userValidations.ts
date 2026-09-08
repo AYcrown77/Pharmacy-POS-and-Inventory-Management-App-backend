@@ -65,6 +65,15 @@ export const resetPasswordValidation = {
         isString: true,
         ...passwordRules,
     },
+    currentPassword: {
+        // The signed-in administrator's own password, proving the person at
+        // the keyboard is who the session says they are.
+        in: 'body',
+        isString: true,
+        notEmpty: {
+            errorMessage: 'Enter your password to confirm',
+        },
+    },
 };
 
 export const settingsValidation = {

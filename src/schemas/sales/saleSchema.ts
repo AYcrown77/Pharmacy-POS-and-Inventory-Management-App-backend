@@ -2,6 +2,7 @@ import { DataTypes, Model, Optional } from "sequelize";
 import sequelize from "../../database/db.js";
 // Type-only, so this does not create a runtime cycle with saleItemSchema.
 import type { SaleItem } from "./saleItemSchema.js";
+import { PRICE_TIERS, PriceTier } from "../products/productSchema.js";
 
 // How the customer paid
 export const PAYMENT_METHODS = ["CASH", "CARD", "TRANSFER"] as const;
@@ -19,13 +20,19 @@ export interface SaleAttributes {
     terminalName: string;
     cashierId: string;
     cashierName: string;
+    customerId: string | null;
+    customerName: string | null;
     subtotal: number;
     discount: number;
     total: number;
     paymentMethod: PaymentMethod;
+    priceTier: PriceTier;
     amountReceived: number | null;
     changeGiven: number | null;
     status: SaleStatus;
+    debtCharged: number;
+    debtRepaid: number;
+    customerBalanceAfter: number | null;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -34,7 +41,7 @@ export interface SaleAttributes {
 export interface SaleCreationAttributes
     extends Optional<
         SaleAttributes,
-        "id" | "discount" | "amountReceived" | "changeGiven" | "status" | "createdAt" | "updatedAt"
+        "id" | "discount" | "priceTier" | "customerId" | "customerName" | "debtCharged" | "debtRepaid" | "customerBalanceAfter" | "amountReceived" | "changeGiven" | "status" | "createdAt" | "updatedAt"
     > {}
 
 // This is the model for the Sale model
@@ -45,13 +52,19 @@ export class Sale extends Model<SaleAttributes, SaleCreationAttributes> implemen
     declare terminalName: string;
     declare cashierId: string;
     declare cashierName: string;
+    declare customerId: string | null;
+    declare customerName: string | null;
     declare subtotal: number;
     declare discount: number;
     declare total: number;
     declare paymentMethod: PaymentMethod;
+    declare priceTier: PriceTier;
     declare amountReceived: number | null;
     declare changeGiven: number | null;
     declare status: SaleStatus;
+    declare debtCharged: number;
+    declare debtRepaid: number;
+    declare customerBalanceAfter: number | null;
     declare createdAt: Date;
     declare updatedAt: Date;
 
@@ -88,6 +101,18 @@ export const SaleSchema = {
         type: DataTypes.STRING,
         allowNull: false,
     },
+    customerId: {
+        // Null for a walk-in, which is most sales. Only a named account can
+        // carry a balance.
+        type: DataTypes.UUID,
+        allowNull: true,
+        defaultValue: null,
+    },
+    customerName: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: null,
+    },
     subtotal: {
         type: DataTypes.BIGINT,
         allowNull: false,
@@ -105,6 +130,14 @@ export const SaleSchema = {
         type: DataTypes.ENUM(...PAYMENT_METHODS),
         allowNull: false,
     },
+    priceTier: {
+        // Which of the three prices this sale was rung up at. Stored on the
+        // sale, not inferred from the amounts, so a later price edit cannot
+        // change what an old receipt appears to have charged.
+        type: DataTypes.ENUM(...PRICE_TIERS),
+        allowNull: false,
+        defaultValue: "CONSUMER",
+    },
     amountReceived: {
         // Cash only; card and transfer are paid to the exact total.
         type: DataTypes.BIGINT,
@@ -120,6 +153,27 @@ export const SaleSchema = {
         type: DataTypes.ENUM(...SALE_STATUSES),
         allowNull: false,
         defaultValue: "COMPLETED",
+    },
+    debtCharged: {
+        // What this sale added to the customer's debt, because they took goods
+        // without paying in full.
+        type: DataTypes.BIGINT,
+        allowNull: false,
+        defaultValue: 0,
+    },
+    debtRepaid: {
+        // What an overpayment took off an existing balance.
+        type: DataTypes.BIGINT,
+        allowNull: false,
+        defaultValue: 0,
+    },
+    customerBalanceAfter: {
+        // The balance as it stood when the receipt printed. Stored rather than
+        // read live, so reprinting an old receipt shows what the customer was
+        // actually told at the time.
+        type: DataTypes.BIGINT,
+        allowNull: true,
+        defaultValue: null,
     },
     createdAt: {
         type: DataTypes.DATE,

@@ -16,6 +16,8 @@ import AuditLog from "../../schemas/system/auditLogSchema.js";
 import StockAdjustment from "../../schemas/inventory/stockAdjustmentSchema.js";
 import SaleReturn from "../../schemas/sales/saleReturnSchema.js";
 import SaleReturnItem from "../../schemas/sales/saleReturnItemSchema.js";
+import Customer from "../../schemas/customers/customerSchema.js";
+import CustomerLedgerEntry from "../../schemas/customers/customerLedgerSchema.js";
 import { hashPassword } from "../../utils/index.js";
 import { addDays, today } from "../../utils/date.js";
 import {
@@ -101,6 +103,12 @@ interface BatchRow {
 
 const clearExistingData = async () => {
     // Order matters: children before parents, or the foreign keys refuse.
+    //
+    // Customer accounts go too. Leaving them behind would strand every ledger
+    // entry against a sale that no longer exists — a balance the system could
+    // no longer explain, which is the one thing the ledger exists to prevent.
+    await CustomerLedgerEntry.destroy({ where: {}, truncate: true, cascade: true });
+    await Customer.destroy({ where: {}, truncate: true, cascade: true });
     await SaleReturnItem.destroy({ where: {}, truncate: true, cascade: true });
     await SaleReturn.destroy({ where: {}, truncate: true, cascade: true });
     await SaleItem.destroy({ where: {}, truncate: true, cascade: true });
@@ -144,8 +152,13 @@ const assertSafeToSeed = async () => {
     ).catch(() => [{ count: "0" }]);
 
     const existing = Number(row?.count ?? 0);
-    if (existing > 0) {
-        console.log(`Replacing existing data (${existing.toLocaleString()} sales will be deleted).`);
+    const accounts = await Customer.count().catch(() => 0);
+
+    if (existing > 0 || accounts > 0) {
+        const parts = [];
+        if (existing > 0) parts.push(`${existing.toLocaleString()} sales`);
+        if (accounts > 0) parts.push(`${accounts} customer account(s) and their balances`);
+        console.log(`Replacing existing data (${parts.join(", ")} will be deleted).`);
     }
 };
 
@@ -209,7 +222,12 @@ const seed = async () => {
             categoryId: categoryIdBySlug.get(item.categorySlug)!,
             strength: item.strength,
             dosageForm: item.dosageForm,
-            sellingPrice: item.sellingPrice,
+            // The catalogue figure is the walk-in price. Trade buyers pay
+            // less: roughly 12% off for a shop, 20% off for a distributor,
+            // rounded to whole naira so the till never deals in part-kobo.
+            priceConsumer: item.sellingPrice,
+            priceRetail: Math.round((item.sellingPrice * 0.88) / 100) * 100,
+            priceWholesale: Math.round((item.sellingPrice * 0.8) / 100) * 100,
             minimumStockLevel: item.minimumStockLevel,
             unitType: item.unitType,
             isActive: true,
@@ -244,7 +262,7 @@ const seed = async () => {
                 expiryDate: addDays(startOfDay, daysFromToday),
                 quantityRemaining,
                 costPrice: Math.round(costNaira * 100),
-                sellingPrice: product.sellingPrice,
+                sellingPrice: product.priceConsumer,
                 supplierName: pick(SEED_SUPPLIERS),
                 receivedAt: new Date(`${addDays(startOfDay, -receivedDaysAgo)}T09:00:00+01:00`),
                 isHistorical: false,
@@ -272,7 +290,7 @@ const seed = async () => {
                 expiryDate: addDays(startOfDay, expiresIn),
                 quantityRemaining: 0,
                 costPrice: baseCost,
-                sellingPrice: product.sellingPrice,
+                sellingPrice: product.priceConsumer,
                 supplierName: pick(SEED_SUPPLIERS),
                 receivedAt: new Date(`${addDays(startOfDay, receivedIn)}T09:00:00+01:00`),
                 isHistorical: true,
@@ -355,7 +373,8 @@ const seed = async () => {
                 const first = pick(sellableSlugs);
                 const second = pick(sellableSlugs);
                 const slug =
-                    productBySlug.get(first)!.sellingPrice <= productBySlug.get(second)!.sellingPrice
+                    productBySlug.get(first)!.priceConsumer <=
+                    productBySlug.get(second)!.priceConsumer
                         ? first
                         : second;
 
@@ -387,7 +406,7 @@ const seed = async () => {
                     productSlug: slug,
                     batch,
                     quantity,
-                    unitPrice: product.sellingPrice,
+                    unitPrice: product.priceConsumer,
                 });
             }
 
@@ -504,6 +523,7 @@ const seed = async () => {
             discount: 0,
             total: subtotal,
             paymentMethod: planned.paymentMethod,
+            priceTier: "CONSUMER",
             amountReceived,
             changeGiven: amountReceived === null ? null : amountReceived - subtotal,
             status: "COMPLETED",

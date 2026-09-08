@@ -1,4 +1,5 @@
 import { PAYMENT_METHODS } from "../../schemas/sales/saleSchema.js";
+import { PRICE_TIERS } from "../../schemas/products/productSchema.js";
 
 export const completeSaleValidation = {
     lines: {
@@ -35,6 +36,14 @@ export const completeSaleValidation = {
         isIn: {
             options: [PAYMENT_METHODS],
             errorMessage: 'Select a payment method',
+        },
+    },
+    priceTier: {
+        in: 'body',
+        optional: true,
+        isIn: {
+            options: [PRICE_TIERS],
+            errorMessage: 'Unknown price tier',
         },
     },
     amountReceived: {

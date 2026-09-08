@@ -41,7 +41,9 @@ const withStock = (product: Product, totals: Map<string, { available: number }>)
         category: product.category ? (product.category.toJSON() as CategoryAttributes) : null,
         strength: product.strength,
         dosageForm: product.dosageForm,
-        sellingPrice: product.sellingPrice,
+        priceWholesale: product.priceWholesale,
+        priceRetail: product.priceRetail,
+        priceConsumer: product.priceConsumer,
         minimumStockLevel: product.minimumStockLevel,
         unitType: product.unitType,
         isActive: product.isActive,
@@ -71,7 +73,9 @@ const normalise = (input: ProductInput) => ({
     categoryId: input.categoryId,
     strength: input.strength?.trim() || null,
     dosageForm: input.dosageForm ?? null,
-    sellingPrice: input.sellingPrice,
+    priceWholesale: input.priceWholesale,
+    priceRetail: input.priceRetail,
+    priceConsumer: input.priceConsumer,
     minimumStockLevel: input.minimumStockLevel,
     unitType: input.unitType,
     isActive: input.isActive ?? true,
@@ -118,7 +122,9 @@ export const listProductsService = async (
         const pick = (item: (typeof items)[number]): string | number => {
             switch (sortKey) {
                 case "sellingPrice":
-                    return item.sellingPrice;
+                    // Sorting by "price" means the walk-in price, which is the
+                    // one shown in the list.
+                    return item.priceConsumer;
                 case "availableStock":
                     return item.availableStock;
                 case "category":
@@ -334,7 +340,12 @@ export const createProductService = async (
             action: "PRODUCT_CREATED",
             entityType: "PRODUCT",
             entityId: product.id,
-            newValue: { name: product.name, sellingPrice: product.sellingPrice },
+            newValue: {
+                name: product.name,
+                priceWholesale: product.priceWholesale,
+                priceRetail: product.priceRetail,
+                priceConsumer: product.priceConsumer,
+            },
         });
 
         const created = await Product.findByPk(product.id, { include: CATEGORY_INCLUDE });
@@ -386,7 +397,11 @@ export const updateProductService = async (
             );
         }
 
-        const previousPrice = product.sellingPrice;
+        const previousPrices = {
+            priceWholesale: product.priceWholesale,
+            priceRetail: product.priceRetail,
+            priceConsumer: product.priceConsumer,
+        };
 
         await product.update(data);
 
@@ -401,15 +416,25 @@ export const updateProductService = async (
 
         // A price change is tracked separately — section 24 lists it as its own
         // action, because it is the one product edit that moves money.
-        if (previousPrice !== data.sellingPrice) {
+        // Any tier moving is a price change worth its own audit entry.
+        const pricesChanged =
+            previousPrices.priceWholesale !== data.priceWholesale ||
+            previousPrices.priceRetail !== data.priceRetail ||
+            previousPrices.priceConsumer !== data.priceConsumer;
+
+        if (pricesChanged) {
             await recordAudit({
                 userId: user.id,
                 userName: user.name,
                 action: "PRICE_CHANGED",
                 entityType: "PRODUCT",
                 entityId: product.id,
-                oldValue: { sellingPrice: previousPrice },
-                newValue: { sellingPrice: data.sellingPrice },
+                oldValue: previousPrices,
+                newValue: {
+                    priceWholesale: data.priceWholesale,
+                    priceRetail: data.priceRetail,
+                    priceConsumer: data.priceConsumer,
+                },
             });
         }
 

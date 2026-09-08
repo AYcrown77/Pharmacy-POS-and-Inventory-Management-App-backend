@@ -5,6 +5,9 @@ import SaleItem from "../../schemas/sales/saleItemSchema.js";
 import SaleReturn from "../../schemas/sales/saleReturnSchema.js";
 import SaleReturnItem from "../../schemas/sales/saleReturnItemSchema.js";
 import Batch from "../../schemas/inventory/batchSchema.js";
+import Customer from "../../schemas/customers/customerSchema.js";
+import CustomerLedgerEntry from "../../schemas/customers/customerLedgerSchema.js";
+import { moveCustomerBalance } from "../customers/customerService.js";
 import { recordMovements, RecordMovementInput } from "../inventory/movementService.js";
 import { recordAudit } from "../system/auditService.js";
 import { messageHandler } from "../../utils/index.js";
@@ -174,6 +177,64 @@ export const processReturnService = async (
         await SaleReturnItem.bulkCreate(returnItems as never, { transaction });
         await recordMovements(movements, transaction);
 
+        /*
+         * Giving back the debt the sale created.
+         *
+         * A sale taken partly on credit leaves the customer owing for goods
+         * they have now handed back. Refunding cash while leaving the debt
+         * standing would charge them twice for the same return, so the refund
+         * clears what this sale put on their account first, and only the
+         * remainder is money out of the till.
+         *
+         * Debt-first rather than proportional, matching what checkout already
+         * does with an overpayment: take it off what they owe before handing
+         * anything over. Capped three ways — by the refund, by what this sale
+         * actually charged (less anything already reversed), and by what they
+         * still owe, since a customer who has since paid the debt off should
+         * get cash rather than be pushed into credit.
+         */
+        let debtReversed = 0;
+
+        if (sale.customerId && sale.debtCharged > 0) {
+            const alreadyReversed = Math.abs(
+                (await CustomerLedgerEntry.sum("amount", {
+                    where: { saleId: sale.id, entryType: "REVERSAL" },
+                    transaction,
+                })) ?? 0
+            );
+
+            const customer = await Customer.findByPk(sale.customerId, {
+                lock: transaction.LOCK.UPDATE,
+                transaction,
+            });
+
+            if (customer) {
+                debtReversed = Math.max(
+                    0,
+                    Math.min(
+                        refundAmount,
+                        sale.debtCharged - alreadyReversed,
+                        Math.max(customer.balance, 0)
+                    )
+                );
+
+                if (debtReversed > 0) {
+                    await moveCustomerBalance(
+                        {
+                            customerId: customer.id,
+                            entryType: "REVERSAL",
+                            amount: -debtReversed,
+                            saleId: sale.id,
+                            receiptNumber: sale.receiptNumber,
+                            reason: input.reason,
+                            user,
+                        },
+                        transaction
+                    );
+                }
+            }
+        }
+
         // Re-read the lines so the status reflects this return's updates.
         const refreshed = await SaleItem.findAll({ where: { saleId: sale.id }, transaction });
         const fullyReturned = refreshed.every((item) => item.returnedQuantity >= item.quantity);
@@ -190,7 +251,7 @@ export const processReturnService = async (
                 entityType: "SALE",
                 entityId: sale.id,
                 oldValue: { status: previousStatus },
-                newValue: { status, refundAmount, reason: input.reason },
+                newValue: { status, refundAmount, debtReversed, reason: input.reason },
             },
             transaction
         );

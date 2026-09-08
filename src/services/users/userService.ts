@@ -1,7 +1,7 @@
 import { Op } from "sequelize";
 import Auth from "../../schemas/users/authSchema.js";
 import { recordAudit } from "../system/auditService.js";
-import { hashPassword, messageHandler } from "../../utils/index.js";
+import { hashPassword, messageHandler, verifyPassword } from "../../utils/index.js";
 import { buildPaginated, resolvePaging } from "../../utils/pagination.js";
 import {
     BAD_REQUEST,
@@ -9,6 +9,7 @@ import {
     INTERNAL_SERVER_ERROR,
     NOT_FOUND,
     SUCCESS,
+    UNAUTHORIZED,
 } from "../../constants/statusCode.js";
 import {
     CreateUserInput,
@@ -237,10 +238,30 @@ export const setUserActiveService = async (
 export const resetPasswordService = async (
     id: string,
     password: string,
+    currentPassword: string,
     actor: AuthenticatedUser,
     callback: (data: UserResponse) => void
 ) => {
     try {
+        // Re-authentication. A signed-in session is not enough to hand out a
+        // new password: an admin terminal left unattended for a minute would
+        // otherwise be all anyone needs to take over an account. The password
+        // proven here is the actor's own, not the target's — the whole point
+        // of a reset is that the target's is forgotten.
+        const actorAccount = await Auth.scope("withPassword").findByPk(actor.id);
+        if (!actorAccount) {
+            return callback(messageHandler("Your session has expired.", false, UNAUTHORIZED, {}));
+        }
+
+        const proven = await verifyPassword(currentPassword ?? "", actorAccount.password);
+        if (!proven) {
+            return callback(
+                messageHandler("Your password is incorrect.", false, UNAUTHORIZED, {
+                    code: "REAUTH_FAILED",
+                })
+            );
+        }
+
         const user = await Auth.findByPk(id);
         if (!user) {
             return callback(messageHandler("User not found.", false, NOT_FOUND, {}));

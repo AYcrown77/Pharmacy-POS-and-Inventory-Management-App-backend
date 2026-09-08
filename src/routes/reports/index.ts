@@ -8,6 +8,7 @@ import {
   salesTrendController,
   cashierReportController,
   movementSummaryController,
+  debtorsReportController,
 } from '../../controllers/reports/reportController.js';
 
 export const reportRouter = express.Router()
@@ -26,3 +27,4 @@ reportRouter.get('/sales/summary', salesSummaryController)
 reportRouter.get('/sales/trend', salesTrendController)
 reportRouter.get('/cashiers', cashierReportController)
 reportRouter.get('/stock-movements/summary', movementSummaryController)
+reportRouter.get('/debtors', debtorsReportController)

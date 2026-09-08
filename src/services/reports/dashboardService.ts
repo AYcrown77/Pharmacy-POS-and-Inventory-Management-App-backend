@@ -1,5 +1,7 @@
 import { Op } from "sequelize";
 import Sale from "../../schemas/sales/saleSchema.js";
+import Customer from "../../schemas/customers/customerSchema.js";
+import { fn, col } from "sequelize";
 import { buildInventorySummary } from "../inventory/inventoryService.js";
 import { messageHandler } from "../../utils/index.js";
 import { addDays, dateOnlyRangeToInstants, today } from "../../utils/date.js";
@@ -28,10 +30,28 @@ export const getDashboardSummaryService = async (callback: (data: ReportResponse
         const day = today();
         const yesterday = addDays(day, -1);
 
-        const [inventory, todayFigures, yesterdayFigures] = await Promise.all([
+        const [inventory, todayFigures, yesterdayFigures, debt] = await Promise.all([
             buildInventorySummary(),
             takingsFor(day),
             takingsFor(yesterday),
+            // Money already handed over as goods and not yet paid for. It sits
+            // beside takings because it is the other half of the day's money:
+            // what came in, and what is still out there.
+            (async () => {
+                const row = (await Customer.findOne({
+                    attributes: [
+                        [fn("COALESCE", fn("SUM", col("balance")), 0), "totalOwed"],
+                        [fn("COUNT", col("id")), "accountsOwing"],
+                    ],
+                    where: { balance: { [Op.gt]: 0 } },
+                    raw: true,
+                })) as unknown as { totalOwed: string; accountsOwing: string } | null;
+
+                return {
+                    totalOwed: Number(row?.totalOwed ?? 0),
+                    accountsOwing: Number(row?.accountsOwing ?? 0),
+                };
+            })(),
         ]);
 
         return callback(
@@ -48,6 +68,7 @@ export const getDashboardSummaryService = async (callback: (data: ReportResponse
                         ? ((todayFigures.total - yesterdayFigures.total) / yesterdayFigures.total) * 100
                         : null,
                 inventory,
+                debt,
             })
         );
     } catch (error) {

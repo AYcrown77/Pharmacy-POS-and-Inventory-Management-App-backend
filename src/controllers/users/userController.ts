@@ -53,12 +53,18 @@ export const setUserActiveController = async (
 };
 
 export const resetPasswordController = async (
-    req: Request<{ id: string }, {}, { password: string }>,
+    req: Request<{ id: string }, {}, { password: string; currentPassword: string }>,
     res: Response
 ) => {
     const actor = (req as any).user as AuthenticatedUser;
 
-    await resetPasswordService(req.params.id, req.body.password, actor, (result) => {
-        return res.status(result.statusCode).json(result);
-    });
+    await resetPasswordService(
+        req.params.id,
+        req.body.password,
+        req.body.currentPassword,
+        actor,
+        (result) => {
+            return res.status(result.statusCode).json(result);
+        }
+    );
 };

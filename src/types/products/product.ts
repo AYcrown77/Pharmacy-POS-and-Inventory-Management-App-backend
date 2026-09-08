@@ -11,7 +11,9 @@ export interface ProductInput {
     categoryId: string;
     strength: string | null;
     dosageForm: DosageForm | null;
-    sellingPrice: number;
+    priceWholesale: number;
+    priceRetail: number;
+    priceConsumer: number;
     minimumStockLevel: number;
     unitType: UnitType;
     isActive: boolean;
@@ -31,7 +33,9 @@ export interface ProductListItem {
     category: CategoryAttributes | null;
     strength: string | null;
     dosageForm: DosageForm | null;
-    sellingPrice: number;
+    priceWholesale: number;
+    priceRetail: number;
+    priceConsumer: number;
     minimumStockLevel: number;
     unitType: UnitType;
     isActive: boolean;

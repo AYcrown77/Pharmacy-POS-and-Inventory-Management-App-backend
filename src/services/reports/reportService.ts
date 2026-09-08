@@ -2,11 +2,21 @@ import { Op, WhereOptions } from "sequelize";
 import Sale, { PAYMENT_METHODS, PaymentMethod } from "../../schemas/sales/saleSchema.js";
 import SaleReturn from "../../schemas/sales/saleReturnSchema.js";
 import StockMovement from "../../schemas/inventory/stockMovementSchema.js";
+import Customer from "../../schemas/customers/customerSchema.js";
+import CustomerLedgerEntry from "../../schemas/customers/customerLedgerSchema.js";
 import { messageHandler } from "../../utils/index.js";
-import { addDays, dateOnlyRangeToInstants, isValidDateOnly, toDateOnly, today } from "../../utils/date.js";
+import {
+    addDays,
+    dateOnlyRangeToInstants,
+    daysBetween,
+    isValidDateOnly,
+    toDateOnly,
+    today,
+} from "../../utils/date.js";
 import { INTERNAL_SERVER_ERROR, SUCCESS } from "../../constants/statusCode.js";
 import {
     CashierReportRow,
+    DebtorRow,
     MovementReportQuery,
     MovementReportSummary,
     PaymentMixEntry,
@@ -310,6 +320,72 @@ export const getMovementSummaryService = async (
     } catch (error) {
         return callback(
             messageHandler("An error occured while summarising movements.", false, INTERNAL_SERVER_ERROR, {})
+        );
+    }
+};
+
+/**
+ * Who owes the pharmacy money, and how cold the account has gone.
+ *
+ * Ordered by balance rather than by age, because the amount is what decides
+ * whether chasing is worth the phone call. "Days since last payment" is
+ * deliberately measured from the last money *in* rather than from when the
+ * debt was first incurred: an account that pays something every week is not a
+ * problem however old its oldest charge is, and one that has paid nothing in
+ * three months is, even if the debt is recent.
+ */
+export const getDebtorsReportService = async (callback: (data: ReportResponse) => void) => {
+    try {
+        const debtors = await Customer.findAll({
+            where: { balance: { [Op.gt]: 0 } },
+            order: [["balance", "DESC"]],
+        });
+
+        if (debtors.length === 0) {
+            return callback(messageHandler("Debtors retrieved", true, SUCCESS, []));
+        }
+
+        // One query for every account's history rather than one per account.
+        const entries = await CustomerLedgerEntry.findAll({
+            where: { customerId: { [Op.in]: debtors.map((customer) => customer.id) } },
+            order: [["createdAt", "DESC"]],
+        });
+
+        const lastPaymentByCustomer = new Map<string, Date>();
+        const lastActivityByCustomer = new Map<string, Date>();
+
+        for (const entry of entries) {
+            if (!lastActivityByCustomer.has(entry.customerId)) {
+                lastActivityByCustomer.set(entry.customerId, entry.createdAt);
+            }
+            // Money in, whether handed over or given back as returned goods.
+            const isMoneyIn = entry.entryType === "REPAYMENT" || entry.entryType === "REVERSAL";
+            if (isMoneyIn && !lastPaymentByCustomer.has(entry.customerId)) {
+                lastPaymentByCustomer.set(entry.customerId, entry.createdAt);
+            }
+        }
+
+        const now = today();
+
+        const rows: DebtorRow[] = debtors.map((customer) => {
+            const lastPayment = lastPaymentByCustomer.get(customer.id) ?? null;
+
+            return {
+                customerId: customer.id,
+                customerName: customer.name,
+                phone: customer.phone,
+                balance: customer.balance,
+                daysSinceLastPayment: lastPayment
+                    ? Math.max(0, -daysBetween(now, toDateOnly(lastPayment)))
+                    : null,
+                lastActivityAt: lastActivityByCustomer.get(customer.id) ?? null,
+            };
+        });
+
+        return callback(messageHandler("Debtors retrieved", true, SUCCESS, rows));
+    } catch (error) {
+        return callback(
+            messageHandler("An error occured while loading debtors.", false, INTERNAL_SERVER_ERROR, {})
         );
     }
 };

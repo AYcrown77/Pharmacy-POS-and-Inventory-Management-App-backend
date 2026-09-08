@@ -17,6 +17,10 @@ export const AUDIT_ACTIONS = [
     "USER_DISABLED",
     "USER_ENABLED",
     "SETTINGS_UPDATED",
+    "CUSTOMER_CREATED",
+    "CUSTOMER_UPDATED",
+    "CUSTOMER_REPAYMENT",
+    "CUSTOMER_CHARGED",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

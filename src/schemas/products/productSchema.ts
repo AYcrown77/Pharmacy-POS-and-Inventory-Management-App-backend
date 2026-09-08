@@ -18,6 +18,20 @@ export const DOSAGE_FORMS = [
 ] as const;
 export type DosageForm = (typeof DOSAGE_FORMS)[number];
 
+/**
+ * The three prices a product carries.
+ *
+ * A pharmacy sells the same pack to a walk-in customer, a corner shop and a
+ * distributor at three different prices. Storing one price and discounting at
+ * the till would leave no record of *which* price was meant, so each is its
+ * own column and the sale records the tier it used.
+ */
+export const PRICE_TIERS = ["WHOLESALE", "RETAIL", "CONSUMER"] as const;
+export type PriceTier = (typeof PRICE_TIERS)[number];
+
+/** The tier the till starts on — the walk-in price, which is most sales. */
+export const DEFAULT_PRICE_TIER: PriceTier = "CONSUMER";
+
 // What one unit of stock represents
 export const UNIT_TYPES = [
     "PACK",
@@ -41,7 +55,9 @@ export interface ProductAttributes {
     categoryId: string;
     strength: string | null;
     dosageForm: DosageForm | null;
-    sellingPrice: number;
+    priceWholesale: number;
+    priceRetail: number;
+    priceConsumer: number;
     minimumStockLevel: number;
     unitType: UnitType;
     isActive: boolean;
@@ -74,7 +90,9 @@ export class Product extends Model<ProductAttributes, ProductCreationAttributes>
     declare categoryId: string;
     declare strength: string | null;
     declare dosageForm: DosageForm | null;
-    declare sellingPrice: number;
+    declare priceWholesale: number;
+    declare priceRetail: number;
+    declare priceConsumer: number;
     declare minimumStockLevel: number;
     declare unitType: UnitType;
     declare isActive: boolean;
@@ -126,10 +144,18 @@ export const ProductSchema = {
         allowNull: true,
         defaultValue: null,
     },
-    sellingPrice: {
+    priceWholesale: {
         // Money is an integer number of kobo, never a float. A DECIMAL would
         // also be exact but would arrive as a string and invite arithmetic on
         // strings; kobo integers cannot drift and add correctly as they are.
+        type: DataTypes.BIGINT,
+        allowNull: false,
+    },
+    priceRetail: {
+        type: DataTypes.BIGINT,
+        allowNull: false,
+    },
+    priceConsumer: {
         type: DataTypes.BIGINT,
         allowNull: false,
     },
@@ -169,5 +195,23 @@ Product.init(ProductSchema, {
 
 Product.belongsTo(Category, { foreignKey: "categoryId", as: "category" });
 Category.hasMany(Product, { foreignKey: "categoryId", as: "products" });
+
+/**
+ * The price for one tier.
+ *
+ * Every place that charges money goes through here, so a new tier is a change
+ * in one function rather than a hunt for `product.priceRetail` across the
+ * codebase.
+ */
+export const priceForTier = (product: Product, tier: PriceTier): number => {
+    switch (tier) {
+        case "WHOLESALE":
+            return product.priceWholesale;
+        case "RETAIL":
+            return product.priceRetail;
+        default:
+            return product.priceConsumer;
+    }
+};
 
 export { Product as default };

@@ -44,6 +44,33 @@ export const loginService = async (data: LoginRequest, callback: (data: LoginRes
 
     const terminal = await findTerminal(terminalId);
 
+    // A cashier belongs at the counter, not at the back-office machine. The
+    // login screen hides the option, but hiding is not access control — a
+    // crafted request would sail past it, so the rule holds here.
+    //
+    // Deliberately one-directional: an administrator may sign in anywhere,
+    // because a manager covering the till during a break is normal and being
+    // locked out of your own checkout is not a security improvement.
+    if (user.role === "CASHIER" && terminal?.type === "ADMIN") {
+      await recordAudit({
+        userId: user.id,
+        userName: user.name,
+        action: "USER_LOGIN",
+        entityType: "SESSION",
+        entityId: user.id,
+        newValue: { refused: "CASHIER_ON_ADMIN_TERMINAL", terminalId: terminal.id },
+      });
+
+      return callback(
+        messageHandler(
+          "This is an administrator terminal. Please sign in at the checkout terminal.",
+          false,
+          FORBIDDEN,
+          { code: "TERMINAL_NOT_PERMITTED" }
+        )
+      );
+    }
+
     await user.update({ lastLoginAt: new Date() });
 
     await recordAudit({

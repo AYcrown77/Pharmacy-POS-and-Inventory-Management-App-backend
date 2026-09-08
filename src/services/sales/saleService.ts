@@ -4,8 +4,13 @@ import Sale from "../../schemas/sales/saleSchema.js";
 import SaleItem from "../../schemas/sales/saleItemSchema.js";
 import SaleReturn from "../../schemas/sales/saleReturnSchema.js";
 import Batch from "../../schemas/inventory/batchSchema.js";
-import Product from "../../schemas/products/productSchema.js";
+import Product, {
+    DEFAULT_PRICE_TIER,
+    priceForTier,
+} from "../../schemas/products/productSchema.js";
 import Terminal from "../../schemas/system/terminalSchema.js";
+import Customer from "../../schemas/customers/customerSchema.js";
+import { moveCustomerBalance } from "../customers/customerService.js";
 import { recordMovements, RecordMovementInput } from "../inventory/movementService.js";
 import { recordAudit } from "../system/auditService.js";
 import { messageHandler } from "../../utils/index.js";
@@ -110,6 +115,10 @@ export const completeSaleService = async (
             );
         }
 
+        // One tier for the whole basket: a customer is a wholesaler or a
+        // walk-in, not both mid-sale.
+        const priceTier = input.priceTier ?? DEFAULT_PRICE_TIER;
+
         const asOf = today();
         const plan: Array<{ product: Product; allocations: FefoAllocation[] }> = [];
         const batchById = new Map<string, Batch>();
@@ -177,7 +186,8 @@ export const completeSaleService = async (
                 total +
                 entry.allocations.reduce(
                     (lineTotal, allocation) =>
-                        lineTotal + entry.product.sellingPrice * allocation.quantity,
+                        lineTotal +
+                        priceForTier(entry.product, priceTier) * allocation.quantity,
                     0
                 ),
             0
@@ -186,14 +196,60 @@ export const completeSaleService = async (
         const discount = Math.max(input.discount ?? 0, 0);
         const total = Math.max(subtotal - discount, 0);
 
-        if (input.paymentMethod === "CASH" && input.amountReceived !== null) {
-            if (input.amountReceived < total) {
-                await transaction.rollback();
-                return callback(
-                    messageHandler("The amount received is less than the total due.", false, BAD_REQUEST, {
-                        code: "INSUFFICIENT_PAYMENT",
-                    })
-                );
+        // The customer, if this sale is on an account rather than a walk-in.
+        // Locked here so the balance cannot shift between the arithmetic below
+        // and the ledger entry written further down.
+        const customer = input.customerId
+            ? await Customer.findByPk(input.customerId, {
+                  lock: transaction.LOCK.UPDATE,
+                  transaction,
+              })
+            : null;
+
+        if (input.customerId && !customer) {
+            await transaction.rollback();
+            return callback(messageHandler("Customer not found.", false, NOT_FOUND, {}));
+        }
+
+        const received = input.paymentMethod === "CASH" ? input.amountReceived : null;
+
+        /*
+         * How money short or over is settled.
+         *
+         *   short  — the customer took goods without paying in full. The
+         *            shortfall becomes debt, which is only possible on a named
+         *            account: a walk-in who cannot pay is refused, because
+         *            there would be nobody to bill.
+         *   over   — the surplus first clears what they already owe, and only
+         *            what is left over is handed back as change. Giving change
+         *            to someone who owes money and then chasing them for it is
+         *            how a balance quietly grows.
+         */
+        let debtCharged = 0;
+        let debtRepaid = 0;
+        let changeGiven: number | null = null;
+
+        if (received !== null) {
+            if (received < total) {
+                const shortfall = total - received;
+
+                if (!customer) {
+                    await transaction.rollback();
+                    return callback(
+                        messageHandler("The amount received is less than the total due.", false, BAD_REQUEST, {
+                            code: "INSUFFICIENT_PAYMENT",
+                        })
+                    );
+                }
+
+                debtCharged = shortfall;
+                changeGiven = 0;
+            } else {
+                const surplus = received - total;
+                // Only an existing debt absorbs the surplus, and only as far
+                // as it goes — never turning change into unasked-for credit.
+                debtRepaid = customer ? Math.min(surplus, Math.max(customer.balance, 0)) : 0;
+                changeGiven = surplus - debtRepaid;
             }
         }
 
@@ -206,15 +262,20 @@ export const completeSaleService = async (
                 terminalName: terminal?.name ?? input.terminalId,
                 cashierId: user.id,
                 cashierName: user.name,
+                customerId: customer?.id ?? null,
+                customerName: customer?.name ?? null,
                 subtotal,
                 discount,
                 total,
                 paymentMethod: input.paymentMethod,
-                amountReceived: input.paymentMethod === "CASH" ? input.amountReceived : null,
-                changeGiven:
-                    input.paymentMethod === "CASH" && input.amountReceived !== null
-                        ? input.amountReceived - total
-                        : null,
+                priceTier,
+                amountReceived: received,
+                changeGiven,
+                debtCharged,
+                debtRepaid,
+                customerBalanceAfter: customer
+                    ? customer.balance + debtCharged - debtRepaid
+                    : null,
                 status: "COMPLETED",
             },
             { transaction }
@@ -242,8 +303,8 @@ export const completeSaleService = async (
                     quantity: allocation.quantity,
                     // The price at the moment of sale. A later price change
                     // must not rewrite what this receipt says was charged.
-                    unitPrice: product.sellingPrice,
-                    subtotal: product.sellingPrice * allocation.quantity,
+                    unitPrice: priceForTier(product, priceTier),
+                    subtotal: priceForTier(product, priceTier) * allocation.quantity,
                     returnedQuantity: 0,
                 });
 
@@ -266,6 +327,38 @@ export const completeSaleService = async (
 
         await SaleItem.bulkCreate(items as never, { transaction });
         await recordMovements(movements, transaction);
+
+        // The balance moves with the sale or not at all. A ledger entry for a
+        // sale that rolled back would be a debt for goods never handed over.
+        if (customer && (debtCharged > 0 || debtRepaid > 0)) {
+            await moveCustomerBalance(
+                {
+                    customerId: customer.id,
+                    entryType: debtCharged > 0 ? "CHARGE" : "REPAYMENT",
+                    amount: debtCharged > 0 ? debtCharged : -debtRepaid,
+                    saleId: sale.id,
+                    receiptNumber: sale.receiptNumber,
+                    user,
+                },
+                transaction
+            );
+
+            await recordAudit(
+                {
+                    userId: user.id,
+                    userName: user.name,
+                    action: debtCharged > 0 ? "CUSTOMER_CHARGED" : "CUSTOMER_REPAYMENT",
+                    entityType: "CUSTOMER",
+                    entityId: customer.id,
+                    oldValue: { balance: customer.balance },
+                    newValue: {
+                        balance: customer.balance + debtCharged - debtRepaid,
+                        receiptNumber: sale.receiptNumber,
+                    },
+                },
+                transaction
+            );
+        }
 
         await recordAudit(
             {

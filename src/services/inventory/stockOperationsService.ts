@@ -126,9 +126,14 @@ export const receiveStockService = async (
         // A new selling price on a delivery becomes the catalogue price, and is
         // audited separately because a price change is a tracked action of its
         // own — not a side effect somebody has to infer from a stock receipt.
-        if (input.sellingPrice !== product.sellingPrice) {
-            const previous = product.sellingPrice;
-            await product.update({ sellingPrice: input.sellingPrice }, { transaction });
+        //
+        // Receiving quotes a single figure, and that figure is the walk-in
+        // price, so it updates the consumer tier only. Wholesale and retail
+        // are commercial decisions made on the product, not consequences of a
+        // delivery arriving.
+        if (input.sellingPrice !== product.priceConsumer) {
+            const previous = product.priceConsumer;
+            await product.update({ priceConsumer: input.sellingPrice }, { transaction });
 
             await recordAudit(
                 {
@@ -137,8 +142,8 @@ export const receiveStockService = async (
                     action: "PRICE_CHANGED",
                     entityType: "PRODUCT",
                     entityId: product.id,
-                    oldValue: { sellingPrice: previous },
-                    newValue: { sellingPrice: input.sellingPrice },
+                    oldValue: { priceConsumer: previous },
+                    newValue: { priceConsumer: input.sellingPrice },
                 },
                 transaction
             );

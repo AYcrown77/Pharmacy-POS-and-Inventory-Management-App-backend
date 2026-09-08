@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "setup": "tsx src/database/setup.ts && tsx src/database/seed/index.ts",
+    "setup": "tsx src/database/setup.ts && tsx src/database/migrate.ts && tsx src/database/seed/index.ts",
     "db:create": "tsx src/database/setup.ts",
+    "migrate": "tsx src/database/migrate.ts",
     "seed": "tsx src/database/seed/index.ts",
     "dev": "nodemon --watch \"src/**/*.ts\" --exec tsx src/index.ts",
     "build": "tsc",

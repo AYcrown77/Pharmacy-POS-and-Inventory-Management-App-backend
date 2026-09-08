@@ -5,6 +5,7 @@ import { inventoryRouter, batchRouter, movementRouter } from "./inventory/index.
 import { stockRouter, supplierRouter } from "./stock/index.js"
 import { saleRouter, returnRouter } from "./sales/index.js"
 import { reportRouter } from "./reports/index.js"
+import { customerRouter } from "./customers/index.js"
 import { settingRouter, terminalRouter, auditRouter } from "./system/settings.js"
 
 const baseRoute = '/api/v1'
@@ -22,6 +23,7 @@ const router = (app: any) => {
   app.use(`${baseRoute}/suppliers`, supplierRouter)
   app.use(`${baseRoute}/sales`, saleRouter)
   app.use(`${baseRoute}/returns`, returnRouter)
+  app.use(`${baseRoute}/customers`, customerRouter)
   app.use(`${baseRoute}/reports`, reportRouter)
   app.use(`${baseRoute}/settings`, settingRouter)
   app.use(`${baseRoute}/terminals`, terminalRouter)
