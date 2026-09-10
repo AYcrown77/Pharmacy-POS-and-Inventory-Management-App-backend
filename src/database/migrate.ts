@@ -2,6 +2,12 @@ import dotenv from "dotenv";
 import { QueryTypes } from "sequelize";
 import sequelize, { connectToDB } from "./db.js";
 import "../schemas/index.js";
+import {
+    ensureMigrationLog,
+    hasMigrationRun,
+    markMigrationRun,
+    UNIT_PRICE_MIGRATION,
+} from "./migrationLog.js";
 
 dotenv.config();
 
@@ -30,8 +36,25 @@ interface Step {
      * safely retry after a half-finished deploy.
      */
     appliesWhen?: () => Promise<boolean>;
+    /**
+     * For data conversions, which leave no mark in the schema: the step is
+     * recorded under this name when it commits and skipped once recorded.
+     */
+    track?: string;
     sql: string[];
 }
+
+/** True when a postgres enum type already has the given label. */
+const enumHasValue = async (typeName: string, label: string): Promise<boolean> => {
+    const rows = await sequelize.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+            SELECT 1 FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
+             WHERE t.typname = :typeName AND e.enumlabel = :label
+         ) AS exists`,
+        { type: QueryTypes.SELECT, replacements: { typeName, label } }
+    );
+    return Boolean(rows[0]?.exists);
+};
 
 /** True when a table still has the named column. */
 const hasColumn = async (table: string, column: string): Promise<boolean> => {
@@ -116,15 +139,61 @@ const steps: Step[] = [
             `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS "unitsPerSaleUnit" INTEGER NOT NULL DEFAULT 1`,
         ],
     },
+    {
+        // Its own step, committed before anything uses it: postgres will not
+        // let a new enum label be used inside the transaction that added it.
+        name: "products: capsule as a base unit",
+        appliesWhen: async () => !(await enumHasValue("enum_products_unitType", "CAPSULE")),
+        sql: [
+            `ALTER TYPE "enum_products_unitType" ADD VALUE IF NOT EXISTS 'CAPSULE' AFTER 'TABLET'`,
+        ],
+    },
+    {
+        name: UNIT_PRICE_MIGRATION,
+        track: UNIT_PRICE_MIGRATION,
+        sql: [
+            // Retail and wholesale used to be typed per pack, while consumer
+            // was per single. Every tier is now per base unit, so the two pack
+            // prices are divided down. Consumer is untouched — it already was.
+            //
+            // Rounded to the nearest kobo. A pack price that does not divide
+            // evenly by its pack size loses at most half a kobo per unit, and
+            // the alternative — a fractional kobo — cannot be charged at all.
+            `UPDATE products
+                SET "priceRetail"    = ROUND("priceRetail"::numeric    / "unitsPerPack"),
+                    "priceWholesale" = ROUND("priceWholesale"::numeric / "unitsPerPack")
+              WHERE "unitsPerPack" > 1`,
+
+            // "One unit of stock is a pack" and "24 units per pack" cannot both
+            // be true. Where they conflict, the base unit is taken from the
+            // dosage form — what one single actually is.
+            `UPDATE products
+                SET "unitType" = (CASE "dosageForm"
+                        WHEN 'TABLET'  THEN 'TABLET'
+                        WHEN 'CAPSULE' THEN 'CAPSULE'
+                        WHEN 'POWDER'  THEN 'SACHET'
+                        ELSE 'PIECE'
+                    END)::"enum_products_unitType"
+              WHERE "unitsPerPack" > 1
+                AND "unitType" IN ('PACK', 'CARTON')`,
+        ],
+    },
 ];
 
 const migrate = async () => {
     await connectToDB();
+    await ensureMigrationLog();
 
     for (const step of steps) {
         process.stdout.write(`  ${step.name} ... `);
 
-        if (step.appliesWhen && !(await step.appliesWhen())) {
+        const applies = step.appliesWhen
+            ? await step.appliesWhen()
+            : step.track
+              ? !(await hasMigrationRun(step.track))
+              : true;
+
+        if (!applies) {
             console.log("already applied");
             continue;
         }
@@ -135,6 +204,9 @@ const migrate = async () => {
         try {
             for (const statement of step.sql) {
                 await sequelize.query(statement, { transaction });
+            }
+            if (step.track) {
+                await markMigrationRun(step.track, transaction);
             }
             await transaction.commit();
             console.log("done");

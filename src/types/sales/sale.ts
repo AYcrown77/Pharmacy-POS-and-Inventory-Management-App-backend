@@ -1,10 +1,17 @@
 import { PaymentMethod, SaleStatus } from "../../schemas/sales/saleSchema.js";
-import { PriceTier } from "../../schemas/products/productSchema.js";
+import { PriceTier, SaleUnit } from "../../schemas/products/productSchema.js";
 import { BaseResponse } from "../users/auth.js";
 
 export interface CompleteSaleLine {
     productId: string;
+    /** How many of `unit`. */
     quantity: number;
+    /**
+     * A single base unit or a whole pack. Omitted by older callers, in which
+     * case the tier's default applies — which is exactly how they behaved
+     * before units were chosen per line.
+     */
+    unit?: SaleUnit;
 }
 
 export interface CompleteSaleInput {
@@ -37,7 +44,10 @@ export interface SaleListQuery {
 export interface FefoAllocation {
     batchId: string;
     batchNumber: string;
+    /** Count of the line's unit: packs, or singles. */
     quantity: number;
+    /** Base units in one of those — the pack size, or 1. */
+    unitsPerSaleUnit: number;
     expiryDate: string;
 }
 

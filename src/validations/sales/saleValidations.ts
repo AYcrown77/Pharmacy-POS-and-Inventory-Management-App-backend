@@ -1,5 +1,5 @@
 import { PAYMENT_METHODS } from "../../schemas/sales/saleSchema.js";
-import { PRICE_TIERS } from "../../schemas/products/productSchema.js";
+import { PRICE_TIERS, SALE_UNITS } from "../../schemas/products/productSchema.js";
 
 export const completeSaleValidation = {
     lines: {
@@ -21,6 +21,14 @@ export const completeSaleValidation = {
             errorMessage: 'Every line must have a quantity of at least one',
         },
         toInt: true,
+    },
+    'lines.*.unit': {
+        in: 'body',
+        optional: true,
+        isIn: {
+            options: [SALE_UNITS],
+            errorMessage: 'A line must be sold as singles or packs',
+        },
     },
     discount: {
         in: 'body',

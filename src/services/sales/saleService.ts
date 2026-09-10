@@ -6,7 +6,8 @@ import SaleReturn from "../../schemas/sales/saleReturnSchema.js";
 import Batch from "../../schemas/inventory/batchSchema.js";
 import Product, {
     DEFAULT_PRICE_TIER,
-    pricingForTier,
+    defaultUnitForTier,
+    priceForTier,
 } from "../../schemas/products/productSchema.js";
 import Terminal from "../../schemas/system/terminalSchema.js";
 import Customer from "../../schemas/customers/customerSchema.js";
@@ -89,7 +90,15 @@ export const completeSaleService = async (
         // Two cashiers selling the same products at once would deadlock if each
         // locked its batches in cart order. Sorting the product ids gives every
         // terminal the same lock order, so one simply waits for the other.
-        const lineByProduct = new Map<string, number>();
+        //
+        // One tier for the whole basket: a customer is a wholesaler or a
+        // walk-in, not both mid-sale. The unit, though, is per line — a pack
+        // and a few loose tablets of the same product is an ordinary sale —
+        // so lines are tallied by product AND unit, and allocated together
+        // below because both draw on the same shelf.
+        const priceTier = input.priceTier ?? DEFAULT_PRICE_TIER;
+        const wantedByProduct = new Map<string, { packs: number; singles: number }>();
+
         for (const line of input.lines) {
             if (!Number.isInteger(line.quantity) || line.quantity <= 0) {
                 await transaction.rollback();
@@ -97,10 +106,15 @@ export const completeSaleService = async (
                     messageHandler("Every line must have a whole quantity of at least one.", false, BAD_REQUEST, {})
                 );
             }
-            lineByProduct.set(line.productId, (lineByProduct.get(line.productId) ?? 0) + line.quantity);
+
+            const unit = line.unit ?? defaultUnitForTier(priceTier);
+            const tally = wantedByProduct.get(line.productId) ?? { packs: 0, singles: 0 };
+            if (unit === "PACK") tally.packs += line.quantity;
+            else tally.singles += line.quantity;
+            wantedByProduct.set(line.productId, tally);
         }
 
-        const productIds = [...lineByProduct.keys()].sort();
+        const productIds = [...wantedByProduct.keys()].sort();
 
         const products = await Product.findAll({
             where: { id: { [Op.in]: productIds } },
@@ -115,28 +129,20 @@ export const completeSaleService = async (
             );
         }
 
-        // One tier for the whole basket: a customer is a wholesaler or a
-        // walk-in, not both mid-sale.
-        const priceTier = input.priceTier ?? DEFAULT_PRICE_TIER;
-
         const asOf = today();
-        const plan: Array<{
-            product: Product;
-            allocations: FefoAllocation[];
-            pricing: ReturnType<typeof pricingForTier>;
-        }> = [];
+        const plan: Array<{ product: Product; allocations: FefoAllocation[] }> = [];
         const batchById = new Map<string, Batch>();
 
         for (const productId of productIds) {
             const product = productById.get(productId)!;
-            const pricing = pricingForTier(product, priceTier);
+            const tally = wantedByProduct.get(productId)!;
+            const packSize = Math.max(product.unitsPerPack, 1);
 
-            // The cart counts in whatever the tier sells — packs for a trade
-            // buyer, singles for a walk-in. The shelf counts in singles only,
-            // so the two are reconciled here, once, before anything is locked
-            // or deducted.
-            const wantedSaleUnits = lineByProduct.get(productId)!;
-            const wanted = wantedSaleUnits * pricing.baseUnits;
+            // A product that is never broken down has no separate pack: a
+            // "pack" of one bottle is one bottle, so it is counted as singles
+            // and the receipt never claims a pack that does not exist.
+            const packsWanted = packSize > 1 ? tally.packs : 0;
+            const singlesWanted = packSize > 1 ? tally.singles : tally.singles + tally.packs;
 
             // FEFO order, locked for the length of the transaction so another
             // terminal cannot sell the same units between the check and the
@@ -155,67 +161,96 @@ export const completeSaleService = async (
                 transaction,
             });
 
-            /*
-             * FEFO, counted in selling units.
-             *
-             * A pack is a sealed box that came from one batch, so a pack is
-             * only ever drawn whole from a single batch — never assembled from
-             * the tail of one and the start of another. That keeps the line's
-             * arithmetic exact (an integer number of packs at an integer
-             * price) and matches what is physically on the shelf. A batch with
-             * fewer than a full pack left still sells as singles at the
-             * consumer tier, where `baseUnits` is 1 and this degenerates to
-             * the plain behaviour it always had.
-             */
+            const remaining = new Map(batches.map((batch) => [batch.id, batch.quantityRemaining]));
             const allocations: FefoAllocation[] = [];
-            const perBatchTaken = new Map<string, number>();
-            let outstanding = wantedSaleUnits;
 
+            /*
+             * Packs first, and whole: a pack is a sealed box from one batch,
+             * never assembled from the tail of one and the start of another.
+             *
+             * Taking them before singles is deliberate. Loose tablets drawn
+             * first could break open the only full box in the earliest batch,
+             * leaving a basket of "one pack and one tablet" unfillable when the
+             * shelf actually holds enough for both.
+             */
+            let packsOutstanding = packsWanted;
             for (const batch of batches) {
-                if (outstanding <= 0) break;
-
-                const takenAlready = perBatchTaken.get(batch.id) ?? 0;
-                const spare = batch.quantityRemaining - takenAlready * pricing.baseUnits;
-                const canTake = Math.min(Math.floor(spare / pricing.baseUnits), outstanding);
-                if (canTake <= 0) continue;
+                if (packsOutstanding <= 0) break;
+                const whole = Math.floor(remaining.get(batch.id)! / packSize);
+                const take = Math.min(whole, packsOutstanding);
+                if (take <= 0) continue;
 
                 allocations.push({
                     batchId: batch.id,
                     batchNumber: batch.batchNumber,
-                    quantity: canTake,
+                    quantity: take,
+                    unitsPerSaleUnit: packSize,
                     expiryDate: batch.expiryDate,
                 });
-                perBatchTaken.set(batch.id, takenAlready + canTake);
+                remaining.set(batch.id, remaining.get(batch.id)! - take * packSize);
                 batchById.set(batch.id, batch);
-                outstanding -= canTake;
+                packsOutstanding -= take;
             }
 
-            if (outstanding > 0) {
-                // Reported in the unit the cashier is working in: telling
-                // someone selling packs that "17 units" are available when
-                // they asked for 2 packs is not an answer they can act on.
-                const availableSaleUnits = wantedSaleUnits - outstanding;
-                const availableBase = availableSaleUnits * pricing.baseUnits;
-                const noun = pricing.sellsPacks ? "pack" : "unit";
-
+            if (packsOutstanding > 0) {
+                const packsAvailable = packsWanted - packsOutstanding;
                 await transaction.rollback();
                 return callback(
                     messageHandler(
-                        `Only ${availableSaleUnits} ${noun}${availableSaleUnits === 1 ? "" : "s"} of ${product.name} are available.`,
+                        `Only ${packsAvailable} pack${packsAvailable === 1 ? "" : "s"} of ${product.name} ${packsAvailable === 1 ? "is" : "are"} available.`,
                         false,
                         CONFLICT,
                         {
                             code: "INSUFFICIENT_STOCK",
                             productId,
-                            requested: wantedSaleUnits,
-                            available: availableSaleUnits,
-                            baseUnitsAvailable: availableBase,
+                            unit: "PACK",
+                            requested: packsWanted,
+                            available: packsAvailable,
                         }
                     )
                 );
             }
 
-            plan.push({ product, allocations, pricing });
+            // Singles, FEFO, from whatever the packs left behind.
+            let singlesOutstanding = singlesWanted;
+            for (const batch of batches) {
+                if (singlesOutstanding <= 0) break;
+                const take = Math.min(remaining.get(batch.id)!, singlesOutstanding);
+                if (take <= 0) continue;
+
+                allocations.push({
+                    batchId: batch.id,
+                    batchNumber: batch.batchNumber,
+                    quantity: take,
+                    unitsPerSaleUnit: 1,
+                    expiryDate: batch.expiryDate,
+                });
+                remaining.set(batch.id, remaining.get(batch.id)! - take);
+                batchById.set(batch.id, batch);
+                singlesOutstanding -= take;
+            }
+
+            if (singlesOutstanding > 0) {
+                const singlesAvailable = singlesWanted - singlesOutstanding;
+                const unitName = product.unitType.toLowerCase();
+                await transaction.rollback();
+                return callback(
+                    messageHandler(
+                        `Only ${singlesAvailable} ${unitName}${singlesAvailable === 1 ? "" : "s"} of ${product.name} ${singlesAvailable === 1 ? "is" : "are"} available${packsWanted > 0 ? " alongside the packs" : ""}.`,
+                        false,
+                        CONFLICT,
+                        {
+                            code: "INSUFFICIENT_STOCK",
+                            productId,
+                            unit: "SINGLE",
+                            requested: singlesWanted,
+                            available: singlesAvailable,
+                        }
+                    )
+                );
+            }
+
+            plan.push({ product, allocations });
         }
 
         // Every line is satisfiable — from here on the sale is being written.
@@ -226,7 +261,10 @@ export const completeSaleService = async (
                 total +
                 entry.allocations.reduce(
                     (lineTotal, allocation) =>
-                        lineTotal + entry.pricing.unitPrice * allocation.quantity,
+                        lineTotal +
+                        priceForTier(entry.product, priceTier) *
+                            allocation.unitsPerSaleUnit *
+                            allocation.quantity,
                     0
                 ),
             0
@@ -332,7 +370,10 @@ export const completeSaleService = async (
 
             for (const allocation of entry.allocations) {
                 const batch = batchById.get(allocation.batchId)!;
-                const { unitPrice, baseUnits } = entry.pricing;
+                const baseUnits = allocation.unitsPerSaleUnit;
+                // Price of one of this line's unit: the base price multiplied
+                // out, so a pack is always exactly its singles at this tier.
+                const unitPrice = priceForTier(product, priceTier) * baseUnits;
 
                 // The allocation is in selling units; the shelf moves in base
                 // units. One pack of 24 leaving is 24 fewer on the shelf.

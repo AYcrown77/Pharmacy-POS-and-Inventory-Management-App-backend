@@ -1,4 +1,4 @@
-import { DOSAGE_FORMS, UNIT_TYPES } from "../../schemas/products/productSchema.js";
+import { DOSAGE_FORMS, GROUPING_UNIT_TYPES, UNIT_TYPES } from "../../schemas/products/productSchema.js";
 
 export const productValidation = {
     name: {
@@ -103,6 +103,19 @@ export const productValidation = {
         isIn: {
             options: [UNIT_TYPES],
             errorMessage: 'Unknown unit type',
+        },
+        // "One unit of stock is a pack" and "24 in a pack" cannot both be true:
+        // stock would be counted in packs while every price and every sale
+        // counts tablets. When a pack holds more than one, the base unit has to
+        // be what one of them is.
+        custom: {
+            options: (value: unknown, meta: { req: { body?: { unitsPerPack?: unknown } } }) =>
+                !(
+                    Number(meta.req.body?.unitsPerPack ?? 1) > 1 &&
+                    (GROUPING_UNIT_TYPES as readonly unknown[]).includes(value)
+                ),
+            errorMessage:
+                'A product that comes in packs of more than one needs a base unit such as Tablet or Sachet, not Pack',
         },
     },
     isActive: {

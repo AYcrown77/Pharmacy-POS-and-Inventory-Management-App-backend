@@ -19,6 +19,7 @@ import SaleReturnItem from "../../schemas/sales/saleReturnItemSchema.js";
 import Customer from "../../schemas/customers/customerSchema.js";
 import CustomerLedgerEntry from "../../schemas/customers/customerLedgerSchema.js";
 import { hashPassword } from "../../utils/index.js";
+import { ensureMigrationLog, markMigrationRun, UNIT_PRICE_MIGRATION } from "../migrationLog.js";
 import { addDays, today } from "../../utils/date.js";
 import {
     SEED_BATCH_PLANS,
@@ -222,16 +223,14 @@ const seed = async () => {
             categoryId: categoryIdBySlug.get(item.categorySlug)!,
             strength: item.strength,
             dosageForm: item.dosageForm,
-            // The catalogue figure is the walk-in price for ONE unit. Retail
-            // and wholesale are priced per pack, so they scale by the pack
-            // size before the trade discount — roughly 12% off for a shop and
-            // 20% for a distributor. Without the pack multiplier a box of 24
-            // would come out cheaper than a single tablet.
+            // Every tier is priced per base unit. The catalogue figure is the
+            // walk-in price for one; trade buyers pay less per unit — roughly
+            // 12% off for a shop and 20% for a distributor — rounded to whole
+            // naira. A pack's price is never stored: it is always the unit
+            // price multiplied by the pack size, so it cannot drift.
             priceConsumer: item.sellingPrice,
-            priceRetail:
-                Math.round((item.sellingPrice * item.unitsPerPack * 0.88) / 100) * 100,
-            priceWholesale:
-                Math.round((item.sellingPrice * item.unitsPerPack * 0.8) / 100) * 100,
+            priceRetail: Math.round((item.sellingPrice * 0.88) / 100) * 100,
+            priceWholesale: Math.round((item.sellingPrice * 0.8) / 100) * 100,
             unitsPerPack: item.unitsPerPack,
             minimumStockLevel: item.minimumStockLevel,
             unitType: item.unitType,
@@ -601,6 +600,11 @@ const seed = async () => {
     for (const part of chunk(movements, 500)) {
         await StockMovement.bulkCreate(part as never, { validate: false });
     }
+
+    // Seeded prices are already per base unit. Record the conversion as done,
+    // so running `pnpm migrate` afterwards cannot divide them a second time.
+    await ensureMigrationLog();
+    await markMigrationRun(UNIT_PRICE_MIGRATION);
 
     // The receipt sequence continues from the history, so the next real sale
     // does not reuse a number already printed.

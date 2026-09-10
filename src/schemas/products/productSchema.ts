@@ -33,28 +33,34 @@ export type PriceTier = (typeof PRICE_TIERS)[number];
 export const DEFAULT_PRICE_TIER: PriceTier = "CONSUMER";
 
 /**
- * Which unit a tier trades in.
+ * How a line is counted at the till: one base unit, or a whole pack of them.
  *
- * A walk-in buys one sachet; a shop or a distributor buys the pack it came in.
- * So the tier decides both the price and what a "quantity of 1" means, and the
- * two can never disagree — which they would if the unit were a separate choice
- * the cashier had to keep in step with the price list.
- *
- * Stock itself is always counted in the smallest unit. A pack sale deducts
- * `unitsPerPack` of them, so there is one honest number for what is on the
- * shelf however it was sold.
+ * The unit is independent of the price tier. Every tier's price is per base
+ * unit, and a pack is simply `unitsPerPack` of them at once — so a wholesaler
+ * can still buy a single sachet and a walk-in can still buy a whole box, and
+ * both are charged correctly without a second price to keep in step.
  */
-export const TIER_SELLS_PACKS: Record<PriceTier, boolean> = {
-    WHOLESALE: true,
-    RETAIL: true,
-    CONSUMER: false,
-};
+export const SALE_UNITS = ["SINGLE", "PACK"] as const;
+export type SaleUnit = (typeof SALE_UNITS)[number];
 
-// What one unit of stock represents
+/**
+ * The unit a tier starts on at the till. Trade buyers usually take the box;
+ * walk-ins usually take a few. Only a default — the cashier can change it per
+ * line.
+ */
+export const defaultUnitForTier = (tier: PriceTier): SaleUnit =>
+    tier === "CONSUMER" ? "SINGLE" : "PACK";
+
+/**
+ * The base unit: the smallest thing the pharmacy sells, and the unit stock is
+ * counted in. A pack is never a base unit when a product is broken down —
+ * "one unit of stock is a pack" and "24 units per pack" cannot both be true.
+ */
 export const UNIT_TYPES = [
     "PACK",
     "BOTTLE",
     "TABLET",
+    "CAPSULE",
     "SACHET",
     "TUBE",
     "VIAL",
@@ -62,6 +68,9 @@ export const UNIT_TYPES = [
     "PIECE",
 ] as const;
 export type UnitType = (typeof UNIT_TYPES)[number];
+
+/** Base units that are themselves groupings, and so cannot be split further. */
+export const GROUPING_UNIT_TYPES: readonly UnitType[] = ["PACK", "CARTON"];
 
 // This is the attributes for the Product model
 export interface ProductAttributes {
@@ -225,37 +234,39 @@ Product.init(ProductSchema, {
 Product.belongsTo(Category, { foreignKey: "categoryId", as: "category" });
 Category.hasMany(Product, { foreignKey: "categoryId", as: "products" });
 
-/**
- * The price for one tier.
- *
- * Every place that charges money goes through here, so a new tier is a change
- * in one function rather than a hunt for `product.priceRetail` across the
- * codebase.
- */
-export interface TierPricing {
-    /** Price of one selling unit, in kobo. */
-    unitPrice: number;
-    /** Base units consumed per selling unit — the pack size, or 1. */
+export interface UnitPricing {
+    unit: SaleUnit;
+    /** Base units in one of this unit — the pack size, or 1. */
     baseUnits: number;
-    sellsPacks: boolean;
+    /** Price of one of this unit, in kobo. */
+    unitPrice: number;
 }
 
 /**
- * What one unit costs and consumes at a given tier.
+ * What one unit costs and consumes, at a tier.
  *
- * Every place that charges or deducts goes through here, so the price and the
- * stock movement can never be computed from different assumptions about what
- * was actually sold.
+ * Every place that charges or deducts stock goes through here, so the price
+ * and the stock movement can never be computed from different assumptions
+ * about what was sold. A pack price is always the base price multiplied out —
+ * never stored — so it cannot drift from the single price, and multiplication
+ * of integers cannot produce a fraction of a kobo.
  */
-export const pricingForTier = (product: Product, tier: PriceTier): TierPricing => {
-    const sellsPacks = TIER_SELLS_PACKS[tier];
+export const pricingFor = (product: Product, tier: PriceTier, unit: SaleUnit): UnitPricing => {
+    const baseUnits = unit === "PACK" ? Math.max(product.unitsPerPack, 1) : 1;
     return {
-        unitPrice: priceForTier(product, tier),
-        baseUnits: sellsPacks ? Math.max(product.unitsPerPack, 1) : 1,
-        sellsPacks,
+        unit,
+        baseUnits,
+        unitPrice: priceForTier(product, tier) * baseUnits,
     };
 };
 
+/**
+ * The price of ONE base unit at a tier.
+ *
+ * All three tier prices are stored per base unit. The bulk discount a trade
+ * buyer gets lives here, in a lower unit price — not in a separately typed
+ * pack price.
+ */
 export const priceForTier = (product: Product, tier: PriceTier): number => {
     switch (tier) {
         case "WHOLESALE":
