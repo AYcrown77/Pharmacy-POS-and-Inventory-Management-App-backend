@@ -13,7 +13,10 @@ dotenv.config();
 
 
 //routes
-const port = process.env.PORT
+// Falls back to the configured default: started as a Windows service there is
+// no shell to have exported PORT, and `listen(undefined)` would pick a random
+// port that nothing else knows about.
+const port = config.server.port
 
 const app = express()
 

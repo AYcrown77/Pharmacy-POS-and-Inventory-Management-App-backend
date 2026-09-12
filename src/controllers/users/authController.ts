@@ -10,12 +10,13 @@ import { SUCCESS } from "../../constants/statusCode.js";
  * `httpOnly` keeps the token out of reach of any script on the page, so an
  * XSS cannot steal a shift. `sameSite: lax` still allows the terminals to
  * reach the API through the Next.js server on the same origin. `secure` is
- * off in development because the pharmacy LAN serves plain HTTP.
+ * off unless COOKIE_SECURE says otherwise, because the pharmacy LAN serves
+ * plain HTTP and a Secure cookie would never be sent back.
  */
 const cookieOptions = {
   httpOnly: true,
   sameSite: "lax" as const,
-  secure: config.server.env === "production",
+  secure: config.auth.cookieSecure,
   path: "/",
 };
 

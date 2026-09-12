@@ -18,7 +18,13 @@ export const config = {
         secretKey: process.env.SECRET_KEY as string,
         // The pharmacy runs shifts, so a session lasts a working day.
         sessionExpiresIn: process.env.SESSION_EXPIRES_IN || '12h',
-        cookieName: process.env.SESSION_COOKIE_NAME || 'mhp_session'
+        cookieName: process.env.SESSION_COOKIE_NAME || 'mhp_session',
+        // A `Secure` cookie is only ever sent over HTTPS, and the pharmacy LAN
+        // serves plain HTTP — so this stays off unless the platform is put
+        // behind TLS and COOKIE_SECURE=true is set. Tying it to NODE_ENV
+        // instead would break every login the day the server is switched to
+        // production mode, with nothing on screen to explain why.
+        cookieSecure: (process.env.COOKIE_SECURE || '').toLowerCase() === 'true'
     },
     cors: {
         // The terminals reach the API through the Next.js server on the same
