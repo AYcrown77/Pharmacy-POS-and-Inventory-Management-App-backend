@@ -26,3 +26,50 @@ export interface RepaymentInput {
 }
 
 export type CustomerResponse = BaseResponse;
+
+export interface CustomerProductHabit {
+    productId: string;
+    productName: string;
+    /** Base units kept (returns taken off). */
+    quantity: number;
+    /** Kobo spent on it, returns taken off. */
+    total: number;
+    /** How many separate purchases included it. */
+    purchases: number;
+}
+
+export interface CustomerMonthSpend {
+    /** YYYY-MM. */
+    month: string;
+    total: number;
+    purchases: number;
+}
+
+export interface CustomerRecentSale {
+    id: string;
+    receiptNumber: string;
+    total: number;
+    refunded: number;
+    paymentMethod: string;
+    status: string;
+    itemCount: number;
+    createdAt: Date;
+}
+
+export interface CustomerInsights {
+    /** Kobo, across every sale not fully reversed, refunds taken off. */
+    totalSpent: number;
+    purchaseCount: number;
+    averageBasket: number;
+    firstPurchaseAt: Date | null;
+    lastPurchaseAt: Date | null;
+    /** Typical gap between visits; null until there are two purchases. */
+    averageDaysBetweenPurchases: number | null;
+    preferredPaymentMethod: string | null;
+    /** Kobo ever taken on account across those sales. */
+    takenOnAccount: number;
+    topProducts: CustomerProductHabit[];
+    /** The last six months, oldest first, including months with nothing. */
+    monthly: CustomerMonthSpend[];
+    recentSales: CustomerRecentSale[];
+}

@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { QueryTypes } from "sequelize";
 import sequelize, { connectToDB } from "./db.js";
 import "../schemas/index.js";
+import { AUDIT_ACTIONS } from "../schemas/system/auditLogSchema.js";
 import {
     ensureMigrationLog,
     hasMigrationRun,
@@ -176,6 +177,46 @@ const steps: Step[] = [
                     END)::"enum_products_unitType"
               WHERE "unitsPerPack" > 1
                 AND "unitType" IN ('PACK', 'CARTON')`,
+        ],
+    },
+    {
+        // Every action the code can record has to exist in the database's enum,
+        // or the audit insert fails — and inside a transaction that takes the
+        // sale or expense down with it. Adding a value that already exists is
+        // harmless, so the whole list is applied whenever anything is missing.
+        name: "audit: every recordable action",
+        appliesWhen: async () => {
+            for (const action of AUDIT_ACTIONS) {
+                if (!(await enumHasValue("enum_audit_logs_action", action))) return true;
+            }
+            return false;
+        },
+        sql: AUDIT_ACTIONS.map(
+            (action) => `ALTER TYPE "enum_audit_logs_action" ADD VALUE IF NOT EXISTS '${action}'`
+        ),
+    },
+    {
+        // Its own step, committed before any sale uses it.
+        name: "sales: split payment",
+        appliesWhen: async () => !(await enumHasValue("enum_sales_paymentMethod", "SPLIT")),
+        sql: [`ALTER TYPE "enum_sales_paymentMethod" ADD VALUE IF NOT EXISTS 'SPLIT'`],
+    },
+    {
+        // Every sale before split payments was paid by exactly one method, so
+        // its one payment row is the sale itself: everything handed over, and
+        // the part of the total not taken on account. Runs every time and only
+        // fills sales that have no rows yet, which also covers a database
+        // seeded after it was migrated.
+        name: "sale payments: one row for each older sale",
+        sql: [
+            `INSERT INTO sale_payments (id, "saleId", method, "amountTendered", "amountApplied", "createdAt", "updatedAt")
+             SELECT gen_random_uuid(), s.id, s."paymentMethod"::text::"enum_sale_payments_method",
+                    COALESCE(s."amountReceived", s.total), GREATEST(s.total - s."debtCharged", 0),
+                    s."createdAt", s."updatedAt"
+               FROM sales s
+              WHERE s."paymentMethod"::text <> 'SPLIT'
+                AND COALESCE(s."amountReceived", s.total) > 0
+                AND NOT EXISTS (SELECT 1 FROM sale_payments p WHERE p."saleId" = s.id)`,
         ],
     },
 ];

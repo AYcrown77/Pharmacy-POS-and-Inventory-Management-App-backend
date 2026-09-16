@@ -21,6 +21,8 @@ export const AUDIT_ACTIONS = [
     "CUSTOMER_UPDATED",
     "CUSTOMER_REPAYMENT",
     "CUSTOMER_CHARGED",
+    "EXPENSE_RECORDED",
+    "EXPENSE_VOIDED",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

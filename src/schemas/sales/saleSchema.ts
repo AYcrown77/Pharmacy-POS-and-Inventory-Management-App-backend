@@ -2,11 +2,18 @@ import { DataTypes, Model, Optional } from "sequelize";
 import sequelize from "../../database/db.js";
 // Type-only, so this does not create a runtime cycle with saleItemSchema.
 import type { SaleItem } from "./saleItemSchema.js";
+import type { SalePayment } from "./salePaymentSchema.js";
+import type { SaleReturn } from "./saleReturnSchema.js";
 import { PRICE_TIERS, PriceTier } from "../products/productSchema.js";
 
 // How the customer paid
 export const PAYMENT_METHODS = ["CASH", "CARD", "TRANSFER"] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+// What a sale is filed under. SPLIT is not a way to pay: it marks a sale paid
+// by more than one of the methods above, whose parts are in sale_payments.
+export const SALE_PAYMENT_METHODS = [...PAYMENT_METHODS, "SPLIT"] as const;
+export type SalePaymentMethod = (typeof SALE_PAYMENT_METHODS)[number];
 
 // A sale is never deleted, only moved along this list by a return
 export const SALE_STATUSES = ["COMPLETED", "PARTIALLY_RETURNED", "REVERSED"] as const;
@@ -25,7 +32,7 @@ export interface SaleAttributes {
     subtotal: number;
     discount: number;
     total: number;
-    paymentMethod: PaymentMethod;
+    paymentMethod: SalePaymentMethod;
     priceTier: PriceTier;
     amountReceived: number | null;
     changeGiven: number | null;
@@ -57,7 +64,7 @@ export class Sale extends Model<SaleAttributes, SaleCreationAttributes> implemen
     declare subtotal: number;
     declare discount: number;
     declare total: number;
-    declare paymentMethod: PaymentMethod;
+    declare paymentMethod: SalePaymentMethod;
     declare priceTier: PriceTier;
     declare amountReceived: number | null;
     declare changeGiven: number | null;
@@ -69,6 +76,8 @@ export class Sale extends Model<SaleAttributes, SaleCreationAttributes> implemen
     declare updatedAt: Date;
 
     declare items?: SaleItem[];
+    declare payments?: SalePayment[];
+    declare returns?: SaleReturn[];
 }
 
 // This is the schema for the Sale model
@@ -127,7 +136,7 @@ export const SaleSchema = {
         allowNull: false,
     },
     paymentMethod: {
-        type: DataTypes.ENUM(...PAYMENT_METHODS),
+        type: DataTypes.ENUM(...SALE_PAYMENT_METHODS),
         allowNull: false,
     },
     priceTier: {
@@ -139,7 +148,7 @@ export const SaleSchema = {
         defaultValue: "CONSUMER",
     },
     amountReceived: {
-        // Cash only; card and transfer are paid to the exact total.
+        // Everything handed over, across every method used.
         type: DataTypes.BIGINT,
         allowNull: true,
         defaultValue: null,

@@ -1,4 +1,4 @@
-import { PaymentMethod, SaleStatus } from "../../schemas/sales/saleSchema.js";
+import { PaymentMethod, SalePaymentMethod, SaleStatus } from "../../schemas/sales/saleSchema.js";
 import { PriceTier, SaleUnit } from "../../schemas/products/productSchema.js";
 import { BaseResponse } from "../users/auth.js";
 
@@ -14,10 +14,23 @@ export interface CompleteSaleLine {
     unit?: SaleUnit;
 }
 
+/** Money handed over by one method. */
+export interface PaymentTender {
+    method: PaymentMethod;
+    /** Kobo. */
+    amount: number;
+}
+
 export interface CompleteSaleInput {
     lines: CompleteSaleLine[];
     discount: number;
-    paymentMethod: PaymentMethod;
+    /**
+     * Every method the customer used and how much by each — part cash, part
+     * card is an ordinary sale. Older tills send `paymentMethod` and
+     * `amountReceived` instead, which is read as a list of one.
+     */
+    payments?: PaymentTender[];
+    paymentMethod?: PaymentMethod;
     /** Which price list to charge. Defaults to the walk-in consumer price. */
     priceTier?: PriceTier;
     amountReceived: number | null;
@@ -34,7 +47,7 @@ export interface SaleListQuery {
     from?: string;
     to?: string;
     cashierId?: string;
-    paymentMethod?: PaymentMethod;
+    paymentMethod?: SalePaymentMethod;
     status?: SaleStatus;
     terminalId?: string;
     productId?: string;

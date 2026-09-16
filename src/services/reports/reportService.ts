@@ -1,6 +1,8 @@
 import { Op, WhereOptions } from "sequelize";
 import Sale, { PAYMENT_METHODS, PaymentMethod } from "../../schemas/sales/saleSchema.js";
 import SaleReturn from "../../schemas/sales/saleReturnSchema.js";
+import SalePayment from "../../schemas/sales/salePaymentSchema.js";
+import { summarizeExpenses } from "../expenses/expenseService.js";
 import StockMovement from "../../schemas/inventory/stockMovementSchema.js";
 import Customer from "../../schemas/customers/customerSchema.js";
 import CustomerLedgerEntry from "../../schemas/customers/customerLedgerSchema.js";
@@ -64,17 +66,46 @@ const billableSalesWhere = (query: SalesReportQuery): WhereOptions => {
     return where as WhereOptions;
 };
 
+/** Loaded with every sale a report adds up by method. */
+const PAYMENTS_INCLUDE = [{ model: SalePayment, as: "payments" }];
+
+/**
+ * What each method paid towards one sale.
+ *
+ * From the sale's payment rows when it has them. A sale from before split
+ * payments has none, and was paid entirely by its one method — less whatever
+ * went on account, which no method paid.
+ */
+const appliedByMethod = (sale: Sale): Record<PaymentMethod, number> => {
+    const applied: Record<PaymentMethod, number> = { CASH: 0, CARD: 0, TRANSFER: 0 };
+
+    if (sale.payments?.length) {
+        for (const payment of sale.payments) applied[payment.method] += payment.amountApplied;
+    } else if (sale.paymentMethod !== "SPLIT") {
+        applied[sale.paymentMethod] += Math.max(sale.total - sale.debtCharged, 0);
+    }
+
+    return applied;
+};
+
+/**
+ * Takings by method.
+ *
+ * A split sale counts under every method it used, for the part each one paid,
+ * so cash in the mix is cash — however it was mixed with card at the counter.
+ * The methods add up to gross sales less what was taken on account.
+ */
 const buildPaymentMix = (sales: Sale[]): PaymentMixEntry[] => {
     const grossSales = sales.reduce((total, sale) => total + sale.total, 0);
+    const perSale = sales.map(appliedByMethod);
 
     return PAYMENT_METHODS.map((method) => {
-        const matching = sales.filter((sale) => sale.paymentMethod === method);
-        const total = matching.reduce((sum, sale) => sum + sale.total, 0);
+        const total = perSale.reduce((sum, applied) => sum + applied[method], 0);
 
         return {
             method,
             total,
-            transactions: matching.length,
+            transactions: perSale.filter((applied) => applied[method] > 0).length,
             // Guarded: a period with no takings would otherwise divide by zero
             // and put NaN on the chart.
             share: grossSales > 0 ? total / grossSales : 0,
@@ -90,12 +121,36 @@ export const getSalesSummaryService = async (
         const { from, to } = resolveRange(query.from, query.to);
         const { start, end } = dateOnlyRangeToInstants(from, to);
 
-        const sales = await Sale.findAll({ where: billableSalesWhere(query) });
+        const sales = await Sale.findAll({ where: billableSalesWhere(query), include: PAYMENTS_INCLUDE });
 
         const grossSales = sales.reduce((total, sale) => total + sale.total, 0);
 
         const refunds = await SaleReturn.findAll({
             where: { createdAt: { [Op.gte]: start, [Op.lt]: end } },
+        });
+        const refundedAmount = refunds.reduce((total, refund) => total + refund.refundAmount, 0);
+
+        // Money in against old debts, whether a surplus at the till or a
+        // repayment taken on the customer's page. Not a sale — the goods were
+        // counted when they left — but it is in the drawer at the end of the day.
+        const repaymentWhere: Record<string | symbol, unknown> = {
+            entryType: "REPAYMENT",
+            createdAt: { [Op.gte]: start, [Op.lt]: end },
+        };
+        if (query.cashierId) repaymentWhere.userId = query.cashierId;
+        const repayments = await CustomerLedgerEntry.findAll({
+            where: repaymentWhere as WhereOptions,
+            attributes: ["amount"],
+        });
+
+        // Expenses follow the same filters as the sales they are set against:
+        // one cashier's report deducts what that cashier paid out.
+        const expenses = await summarizeExpenses({
+            from,
+            to,
+            recordedById: query.cashierId,
+            paymentMethod:
+                query.paymentMethod && query.paymentMethod !== "SPLIT" ? query.paymentMethod : undefined,
         });
 
         const summary: SalesReportSummary = {
@@ -105,8 +160,12 @@ export const getSalesSummaryService = async (
             // left as a fraction of a kobo that cannot exist.
             averageSale: sales.length > 0 ? Math.floor(grossSales / sales.length) : 0,
             byMethod: buildPaymentMix(sales),
-            refundedAmount: refunds.reduce((total, refund) => total + refund.refundAmount, 0),
+            refundedAmount,
             refundCount: refunds.length,
+            creditSales: sales.reduce((total, sale) => total + sale.debtCharged, 0),
+            debtCollected: repayments.reduce((total, entry) => total - entry.amount, 0),
+            expenses,
+            netSales: grossSales - refundedAmount - expenses.total,
         };
 
         return callback(messageHandler("Sales summary retrieved", true, SUCCESS, summary));
@@ -210,6 +269,7 @@ export const getPaymentMixService = async (days: number, callback: (data: Report
                 status: { [Op.ne]: "REVERSED" },
                 createdAt: { [Op.gte]: start, [Op.lt]: end },
             },
+            include: PAYMENTS_INCLUDE,
         });
 
         return callback(messageHandler("Payment mix retrieved", true, SUCCESS, buildPaymentMix(sales)));
@@ -233,15 +293,10 @@ export const getCashierReportService = async (
                 status: { [Op.ne]: "REVERSED" },
                 createdAt: { [Op.gte]: start, [Op.lt]: end },
             },
+            include: PAYMENTS_INCLUDE,
         });
 
         const byCashier = new Map<string, CashierReportRow>();
-
-        const bucket: Record<PaymentMethod, keyof CashierReportRow> = {
-            CASH: "cashSales",
-            CARD: "cardSales",
-            TRANSFER: "transferSales",
-        };
 
         for (const sale of sales) {
             let row = byCashier.get(sale.cashierId);
@@ -254,15 +309,22 @@ export const getCashierReportService = async (
                     cashSales: 0,
                     cardSales: 0,
                     transferSales: 0,
+                    creditSales: 0,
                     totalSales: 0,
                     averageSale: 0,
                 };
                 byCashier.set(sale.cashierId, row);
             }
 
+            // By what each method actually paid, so a cashier's cash column is
+            // the cash they should be able to account for.
+            const applied = appliedByMethod(sale);
             row.transactions += 1;
             row.totalSales += sale.total;
-            (row[bucket[sale.paymentMethod]] as number) += sale.total;
+            row.cashSales += applied.CASH;
+            row.cardSales += applied.CARD;
+            row.transferSales += applied.TRANSFER;
+            row.creditSales += sale.debtCharged;
         }
 
         const rows = [...byCashier.values()]

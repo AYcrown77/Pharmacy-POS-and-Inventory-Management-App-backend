@@ -3,6 +3,7 @@ import {
     listCustomersService,
     getCustomerService,
     getCustomerLedgerService,
+    getCustomerInsightsService,
     createCustomerService,
     updateCustomerService,
     recordRepaymentService,
@@ -58,6 +59,12 @@ export const recordRepaymentController = async (
     const user = (req as any).user as AuthenticatedUser;
 
     await recordRepaymentService(req.params.id, req.body, user, (result) => {
+        return res.status(result.statusCode).json(result);
+    });
+};
+
+export const getCustomerInsightsController = async (req: Request, res: Response) => {
+    await getCustomerInsightsService(req.params.id, (result) => {
         return res.status(result.statusCode).json(result);
     });
 };

@@ -40,11 +40,37 @@ export const completeSaleValidation = {
         toInt: true,
     },
     paymentMethod: {
+        // Optional once `payments` is sent; the service requires one or the
+        // other.
         in: 'body',
+        optional: true,
         isIn: {
             options: [PAYMENT_METHODS],
             errorMessage: 'Select a payment method',
         },
+    },
+    payments: {
+        in: 'body',
+        optional: true,
+        isArray: {
+            options: { min: 1, max: 3 },
+            errorMessage: 'Payments must list between one and three methods',
+        },
+    },
+    'payments.*.method': {
+        in: 'body',
+        isIn: {
+            options: [PAYMENT_METHODS],
+            errorMessage: 'Unknown payment method',
+        },
+    },
+    'payments.*.amount': {
+        in: 'body',
+        isInt: {
+            options: { min: 0 },
+            errorMessage: 'Each payment must be a whole number of kobo',
+        },
+        toInt: true,
     },
     priceTier: {
         in: 'body',
@@ -55,8 +81,8 @@ export const completeSaleValidation = {
         },
     },
     amountReceived: {
-        // Cash only. Card and transfer are paid to the exact total, so there
-        // is nothing to tender and nothing to give back.
+        // The single-method form: what was handed over. Null means the
+        // customer paid exactly the total.
         in: 'body',
         optional: { options: { nullable: true } },
         isInt: {

@@ -1,8 +1,9 @@
 import { Op, QueryTypes, Transaction } from "sequelize";
 import sequelize from "../../database/db.js";
-import Sale from "../../schemas/sales/saleSchema.js";
+import Sale, { PAYMENT_METHODS, SalePaymentMethod } from "../../schemas/sales/saleSchema.js";
 import SaleItem from "../../schemas/sales/saleItemSchema.js";
 import SaleReturn from "../../schemas/sales/saleReturnSchema.js";
+import SalePayment from "../../schemas/sales/salePaymentSchema.js";
 import Batch from "../../schemas/inventory/batchSchema.js";
 import Product, {
     DEFAULT_PRICE_TIER,
@@ -12,6 +13,7 @@ import Product, {
 import Terminal from "../../schemas/system/terminalSchema.js";
 import Customer from "../../schemas/customers/customerSchema.js";
 import { moveCustomerBalance } from "../customers/customerService.js";
+import { isSettlementRefusal, settlePayment } from "./settlement.js";
 import { recordMovements, RecordMovementInput } from "../inventory/movementService.js";
 import { recordAudit } from "../system/auditService.js";
 import { messageHandler } from "../../utils/index.js";
@@ -27,6 +29,7 @@ import {
 import {
     CompleteSaleInput,
     FefoAllocation,
+    PaymentTender,
     SaleListQuery,
     SaleResponse,
 } from "../../types/sales/sale.js";
@@ -35,6 +38,7 @@ import { AuthenticatedUser } from "../../types/users/auth.js";
 const SALE_INCLUDE = [
     { model: SaleItem, as: "items" },
     { model: SaleReturn, as: "returns" },
+    { model: SalePayment, as: "payments" },
 ];
 
 export const formatReceiptNumber = (sequence: number): string =>
@@ -288,51 +292,48 @@ export const completeSaleService = async (
             return callback(messageHandler("Customer not found.", false, NOT_FOUND, {}));
         }
 
-        // Every method records what was actually handed over, not just cash.
-        // A card or transfer can fall short of the total just as a handful of
-        // notes can, and the shortfall has to be able to become debt — which
-        // it cannot if the amount is thrown away for anything but cash.
-        const received = input.amountReceived ?? null;
-
         /*
-         * How money short or over is settled.
+         * Settling the payment.
          *
-         *   short  — the customer took goods without paying in full. The
-         *            shortfall becomes debt, which is only possible on a named
-         *            account: a walk-in who cannot pay is refused, because
-         *            there would be nobody to bill.
-         *   over   — the surplus first clears what they already owe, and only
-         *            what is left over is handed back as change. Giving change
-         *            to someone who owes money and then chasing them for it is
-         *            how a balance quietly grows.
+         * A customer can pay by more than one method — part cash, part card —
+         * so what arrives is a list of tenders rather than one amount. An
+         * older till that sends a single method and amount is read as a list
+         * of one, and no amount at all means it was paid exactly.
+         *
+         * The rules live in settlePayment: a shortfall becomes debt on a named
+         * account, a surplus clears existing debt before any change is given,
+         * and change only ever comes out of the cash.
          */
-        let debtCharged = 0;
-        let debtRepaid = 0;
-        let changeGiven: number | null = null;
+        const tenders: PaymentTender[] = input.payments?.length
+            ? input.payments
+            : input.paymentMethod
+              ? [{ method: input.paymentMethod, amount: input.amountReceived ?? total }]
+              : [];
 
-        if (received !== null) {
-            if (received < total) {
-                const shortfall = total - received;
-
-                if (!customer) {
-                    await transaction.rollback();
-                    return callback(
-                        messageHandler("The amount received is less than the total due.", false, BAD_REQUEST, {
-                            code: "INSUFFICIENT_PAYMENT",
-                        })
-                    );
-                }
-
-                debtCharged = shortfall;
-                changeGiven = 0;
-            } else {
-                const surplus = received - total;
-                // Only an existing debt absorbs the surplus, and only as far
-                // as it goes — never turning change into unasked-for credit.
-                debtRepaid = customer ? Math.min(surplus, Math.max(customer.balance, 0)) : 0;
-                changeGiven = surplus - debtRepaid;
-            }
+        if (tenders.length === 0) {
+            await transaction.rollback();
+            return callback(messageHandler("Choose how the customer paid.", false, BAD_REQUEST, {}));
         }
+
+        const settled = settlePayment({
+            total,
+            tenders,
+            customerBalance: customer ? customer.balance : null,
+        });
+
+        if (isSettlementRefusal(settled)) {
+            await transaction.rollback();
+            return callback(messageHandler(settled.message, false, BAD_REQUEST, { code: settled.code }));
+        }
+
+        const { debtCharged, debtRepaid, changeGiven } = settled;
+
+        // Filed under the one method used, or SPLIT when there was more than
+        // one. A sale taken wholly on account used none, and keeps the method
+        // the cashier had selected.
+        const methodsUsed = PAYMENT_METHODS.filter((method) => settled.tendered[method] > 0);
+        const salePaymentMethod: SalePaymentMethod =
+            methodsUsed.length > 1 ? "SPLIT" : (methodsUsed[0] ?? tenders[0].method);
 
         const terminal = input.terminalId ? await Terminal.findByPk(input.terminalId, { transaction }) : null;
 
@@ -348,9 +349,9 @@ export const completeSaleService = async (
                 subtotal,
                 discount,
                 total,
-                paymentMethod: input.paymentMethod,
+                paymentMethod: salePaymentMethod,
                 priceTier,
-                amountReceived: received,
+                amountReceived: settled.received,
                 changeGiven,
                 debtCharged,
                 debtRepaid,
@@ -416,6 +417,18 @@ export const completeSaleService = async (
         }
 
         await SaleItem.bulkCreate(items as never, { transaction });
+
+        // One row per method actually used, so takings by method add up
+        // however any one customer split their payment.
+        const paymentRows = methodsUsed.map((method) => ({
+            saleId: sale.id,
+            method,
+            amountTendered: settled.tendered[method],
+            amountApplied: settled.applied[method],
+        }));
+        if (paymentRows.length > 0) {
+            await SalePayment.bulkCreate(paymentRows, { transaction });
+        }
         await recordMovements(movements, transaction);
 
         // The balance moves with the sale or not at all. A ledger entry for a

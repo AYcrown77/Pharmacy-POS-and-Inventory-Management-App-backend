@@ -1,6 +1,10 @@
-import { Op, Transaction } from "sequelize";
+import { literal, Op, Order, Transaction } from "sequelize";
 import sequelize from "../../database/db.js";
 import Customer from "../../schemas/customers/customerSchema.js";
+import Sale from "../../schemas/sales/saleSchema.js";
+import SaleItem from "../../schemas/sales/saleItemSchema.js";
+import SaleReturn from "../../schemas/sales/saleReturnSchema.js";
+import { daysBetween, toDateOnly, today } from "../../utils/date.js";
 import CustomerLedgerEntry, {
     LedgerEntryType,
 } from "../../schemas/customers/customerLedgerSchema.js";
@@ -15,6 +19,7 @@ import {
 } from "../../constants/statusCode.js";
 import {
     CustomerInput,
+    CustomerInsights,
     CustomerListQuery,
     CustomerResponse,
     RepaymentInput,
@@ -82,6 +87,28 @@ export const moveCustomerBalance = async (
     );
 };
 
+// A sale that was fully reversed bought nothing, and a partial return gave
+// some of its money back — so both are taken out of what a customer "spent".
+const CUSTOMER_TOTAL_SPENT = `(
+    SELECT CAST(
+        COALESCE((SELECT SUM(s.total) FROM sales s
+                   WHERE s."customerId" = "Customer"."id" AND s.status <> 'REVERSED'), 0)
+      - COALESCE((SELECT SUM(r."refundAmount") FROM sale_returns r
+                    JOIN sales s ON s.id = r."saleId"
+                   WHERE s."customerId" = "Customer"."id" AND s.status <> 'REVERSED'), 0)
+    AS BIGINT)
+)`;
+
+const CUSTOMER_PURCHASE_COUNT = `(
+    SELECT CAST(COUNT(*) AS INTEGER) FROM sales s
+     WHERE s."customerId" = "Customer"."id" AND s.status <> 'REVERSED'
+)`;
+
+const CUSTOMER_LAST_PURCHASE = `(
+    SELECT MAX(s."createdAt") FROM sales s
+     WHERE s."customerId" = "Customer"."id" AND s.status <> 'REVERSED'
+)`;
+
 export const listCustomersService = async (
     query: CustomerListQuery,
     callback: (data: CustomerResponse) => void
@@ -100,9 +127,33 @@ export const listCustomersService = async (
             where[Op.or] = [{ name: { [Op.iLike]: term } }, { phone: { [Op.iLike]: term } }];
         }
 
+        const direction = query.sortDir === "desc" ? "DESC" : "ASC";
+
+        // Spending is read from the sales themselves rather than kept as a
+        // running total that could drift from them. Subqueries keep it to one
+        // round trip per page, and sorting by them happens in the database, so
+        // "biggest spenders" is right across every page, not just this one.
+        const order: Order =
+            query.sortBy === "balance"
+                ? [["balance", direction]]
+                : query.sortBy === "totalSpent"
+                  ? [[literal('"totalSpent"'), direction]]
+                  : query.sortBy === "purchaseCount"
+                    ? [[literal('"purchaseCount"'), direction]]
+                    : query.sortBy === "lastPurchaseAt"
+                      ? [literal(`"lastPurchaseAt" ${direction} NULLS LAST`)]
+                      : [["name", direction]];
+
         const { rows, count } = await Customer.findAndCountAll({
             where,
-            order: [[query.sortBy === "balance" ? "balance" : "name", query.sortDir === "desc" ? "DESC" : "ASC"]],
+            attributes: {
+                include: [
+                    [literal(CUSTOMER_TOTAL_SPENT), "totalSpent"],
+                    [literal(CUSTOMER_PURCHASE_COUNT), "purchaseCount"],
+                    [literal(CUSTOMER_LAST_PURCHASE), "lastPurchaseAt"],
+                ],
+            },
+            order,
             limit,
             offset,
         });
@@ -306,6 +357,136 @@ export const recordRepaymentService = async (
         console.log("Repayment failed:", error?.message);
         return callback(
             messageHandler("An error occured while recording the repayment.", false, INTERNAL_SERVER_ERROR, {})
+        );
+    }
+};
+
+/**
+ * How a customer buys: how much, how often, what, and how they pay.
+ *
+ * Only named accounts can be tracked — a walk-in leaves no identity on the
+ * sale — so this is the picture of the pharmacy's regulars. Every figure comes
+ * from the sales themselves, net of returns, so it cannot disagree with them.
+ */
+export const getCustomerInsightsService = async (
+    id: string,
+    callback: (data: CustomerResponse) => void
+) => {
+    try {
+        const customer = await Customer.findByPk(id);
+        if (!customer) {
+            return callback(messageHandler("Customer not found.", false, NOT_FOUND, {}));
+        }
+
+        const sales = await Sale.findAll({
+            where: { customerId: id, status: { [Op.ne]: "REVERSED" } },
+            include: [
+                { model: SaleItem, as: "items" },
+                { model: SaleReturn, as: "returns" },
+            ],
+            order: [["createdAt", "DESC"]],
+        });
+
+        const refundedOn = (sale: Sale) =>
+            (sale.returns ?? []).reduce((total, refund) => total + refund.refundAmount, 0);
+        const keptValue = (sale: Sale) => Math.max(sale.total - refundedOn(sale), 0);
+
+        const totalSpent = sales.reduce((total, sale) => total + keptValue(sale), 0);
+        const purchaseCount = sales.length;
+
+        // What they keep coming back for — counted in base units and net of
+        // anything they brought back.
+        const byProduct = new Map<
+            string,
+            { productId: string; productName: string; quantity: number; total: number; sales: Set<string> }
+        >();
+        for (const sale of sales) {
+            for (const item of sale.items ?? []) {
+                const kept = item.quantity - item.returnedQuantity;
+                if (kept <= 0) continue;
+                const habit = byProduct.get(item.productId) ?? {
+                    productId: item.productId,
+                    productName: item.productName,
+                    quantity: 0,
+                    total: 0,
+                    sales: new Set<string>(),
+                };
+                habit.quantity += kept * item.unitsPerSaleUnit;
+                habit.total += kept * item.unitPrice;
+                habit.sales.add(sale.id);
+                byProduct.set(item.productId, habit);
+            }
+        }
+
+        const topProducts = [...byProduct.values()]
+            .map(({ sales: containing, ...habit }) => ({ ...habit, purchases: containing.size }))
+            .sort((a, b) => b.total - a.total)
+            .slice(0, 5);
+
+        // The last six calendar months in the pharmacy's timezone, quiet months
+        // included, so a regular who has stopped coming shows as a gap.
+        const months: string[] = [];
+        let [year, month] = today().slice(0, 7).split("-").map(Number);
+        for (let i = 0; i < 6; i += 1) {
+            months.unshift(`${year}-${String(month).padStart(2, "0")}`);
+            month -= 1;
+            if (month === 0) {
+                month = 12;
+                year -= 1;
+            }
+        }
+        const byMonth = new Map(months.map((key) => [key, { total: 0, purchases: 0 }]));
+        for (const sale of sales) {
+            const bucket = byMonth.get(toDateOnly(sale.createdAt).slice(0, 7));
+            if (!bucket) continue;
+            bucket.total += keptValue(sale);
+            bucket.purchases += 1;
+        }
+
+        const methodCounts = new Map<string, number>();
+        for (const sale of sales) {
+            methodCounts.set(sale.paymentMethod, (methodCounts.get(sale.paymentMethod) ?? 0) + 1);
+        }
+        const preferredPaymentMethod =
+            [...methodCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+        const first = sales[sales.length - 1];
+        const last = sales[0];
+
+        const insights: CustomerInsights = {
+            totalSpent,
+            purchaseCount,
+            averageBasket: purchaseCount > 0 ? Math.floor(totalSpent / purchaseCount) : 0,
+            firstPurchaseAt: first?.createdAt ?? null,
+            lastPurchaseAt: last?.createdAt ?? null,
+            averageDaysBetweenPurchases:
+                purchaseCount >= 2
+                    ? Math.round(
+                          daysBetween(toDateOnly(first.createdAt), toDateOnly(last.createdAt)) /
+                              (purchaseCount - 1)
+                      )
+                    : null,
+            preferredPaymentMethod,
+            takenOnAccount: sales.reduce((total, sale) => total + sale.debtCharged, 0),
+            topProducts,
+            monthly: months.map((key) => ({ month: key, ...byMonth.get(key)! })),
+            recentSales: sales.slice(0, 8).map((sale) => ({
+                id: sale.id,
+                receiptNumber: sale.receiptNumber,
+                total: sale.total,
+                refunded: refundedOn(sale),
+                paymentMethod: sale.paymentMethod,
+                status: sale.status,
+                itemCount: (sale.items ?? []).reduce((total, item) => total + item.quantity, 0),
+                createdAt: sale.createdAt,
+            })),
+        };
+
+        return callback(messageHandler("Customer insights retrieved", true, SUCCESS, { customer, ...insights }));
+    } catch (error: any) {
+        console.log("Customer insights failed:", error?.message);
+        return callback(
+            messageHandler("An error occured while loading the customer's history.", false, INTERNAL_SERVER_ERROR, {})
         );
     }
 };

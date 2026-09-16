@@ -1,12 +1,13 @@
 import { MovementType } from "../../schemas/inventory/stockMovementSchema.js";
-import { PaymentMethod } from "../../schemas/sales/saleSchema.js";
+import { PaymentMethod, SalePaymentMethod } from "../../schemas/sales/saleSchema.js";
+import { ExpenseSummary } from "../expenses/expense.js";
 import { BaseResponse } from "../users/auth.js";
 
 export interface SalesReportQuery {
     from?: string;
     to?: string;
     cashierId?: string;
-    paymentMethod?: PaymentMethod;
+    paymentMethod?: SalePaymentMethod;
 }
 
 export interface MovementReportQuery {
@@ -27,6 +28,7 @@ export interface SalesTrendPoint {
 
 export interface PaymentMixEntry {
     method: PaymentMethod;
+    /** What this method paid towards sales — change and debt taken off. */
     total: number;
     transactions: number;
     /** 0-1. */
@@ -40,6 +42,13 @@ export interface SalesReportSummary {
     byMethod: PaymentMixEntry[];
     refundedAmount: number;
     refundCount: number;
+    /** Goods handed over on account: in gross sales, but not yet paid for. */
+    creditSales: number;
+    /** Money received against customers' debts — not a sale, but in the drawer. */
+    debtCollected: number;
+    expenses: ExpenseSummary;
+    /** Gross sales, less refunds, less expenses. */
+    netSales: number;
 }
 
 export interface CashierReportRow {
@@ -49,6 +58,7 @@ export interface CashierReportRow {
     cashSales: number;
     cardSales: number;
     transferSales: number;
+    creditSales: number;
     totalSales: number;
     averageSale: number;
 }

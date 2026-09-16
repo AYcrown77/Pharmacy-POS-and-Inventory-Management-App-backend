@@ -6,6 +6,7 @@ import {
   listCustomersController,
   getCustomerController,
   getCustomerLedgerController,
+  getCustomerInsightsController,
   createCustomerController,
   updateCustomerController,
   recordRepaymentController,
@@ -23,6 +24,7 @@ customerRouter.use(verify)
 // owed before handing over goods, register someone new, and take a repayment.
 customerRouter.get('/', listCustomersController)
 customerRouter.get('/:id/ledger', getCustomerLedgerController)
+customerRouter.get('/:id/insights', getCustomerInsightsController)
 customerRouter.get('/:id', getCustomerController)
 
 customerRouter.post('/', validate(checkSchema(customerValidation as any)), createCustomerController)
