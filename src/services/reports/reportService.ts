@@ -18,6 +18,7 @@ import {
 import { INTERNAL_SERVER_ERROR, SUCCESS } from "../../constants/statusCode.js";
 import {
     CashierReportRow,
+    DebtLedgerMovement,
     DebtorRow,
     MovementReportQuery,
     MovementReportSummary,
@@ -125,23 +126,72 @@ export const getSalesSummaryService = async (
 
         const grossSales = sales.reduce((total, sale) => total + sale.total, 0);
 
-        const refunds = await SaleReturn.findAll({
-            where: { createdAt: { [Op.gte]: start, [Op.lt]: end } },
-        });
-        const refundedAmount = refunds.reduce((total, refund) => total + refund.refundAmount, 0);
-
-        // Money in against old debts, whether a surplus at the till or a
-        // repayment taken on the customer's page. Not a sale — the goods were
-        // counted when they left — but it is in the drawer at the end of the day.
-        const repaymentWhere: Record<string | symbol, unknown> = {
-            entryType: "REPAYMENT",
+        const refundWhere: Record<string | symbol, unknown> = {
             createdAt: { [Op.gte]: start, [Op.lt]: end },
         };
-        if (query.cashierId) repaymentWhere.userId = query.cashierId;
-        const repayments = await CustomerLedgerEntry.findAll({
-            where: repaymentWhere as WhereOptions,
-            attributes: ["amount"],
+        if (query.cashierId) refundWhere.processedBy = query.cashierId;
+        const refunds = await SaleReturn.findAll({ where: refundWhere as WhereOptions });
+        const refundedAmount = refunds.reduce((total, refund) => total + refund.refundAmount, 0);
+
+        // Customer debt that moved on these dates, straight from the ledger:
+        //   REPAYMENT — money paid back, at the till or on the customer's page.
+        //   REVERSAL  — returned goods that cleared debt; no money changed hands.
+        // Both are read on the date they happened, like everything else here.
+        const ledgerWhere = (entryType: "REPAYMENT" | "REVERSAL") => {
+            const where: Record<string | symbol, unknown> = {
+                entryType,
+                createdAt: { [Op.gte]: start, [Op.lt]: end },
+            };
+            if (query.cashierId) where.userId = query.cashierId;
+            return where as WhereOptions;
+        };
+        const newestFirst = [["createdAt", "DESC"]] as [string, string][];
+        const repayments = await CustomerLedgerEntry.findAll({ where: ledgerWhere("REPAYMENT"), order: newestFirst });
+        const reversals = await CustomerLedgerEntry.findAll({ where: ledgerWhere("REVERSAL"), order: newestFirst });
+
+        const customerIds = [...new Set([...repayments, ...reversals].map((entry) => entry.customerId))];
+        const customerNames = new Map(
+            (customerIds.length > 0
+                ? await Customer.findAll({ where: { id: { [Op.in]: customerIds } }, attributes: ["id", "name"] })
+                : []
+            ).map((customer) => [customer.id, customer.name])
+        );
+
+        const toMovement = (entry: CustomerLedgerEntry): DebtLedgerMovement => ({
+            entryId: entry.id,
+            customerId: entry.customerId,
+            customerName: customerNames.get(entry.customerId) ?? "Unknown customer",
+            // Ledger amounts are signed; both of these reduce what is owed.
+            amount: -entry.amount,
+            saleId: entry.saleId,
+            receiptNumber: entry.receiptNumber,
+            recordedBy: entry.userName,
+            reason: entry.reason,
+            createdAt: entry.createdAt,
         });
+
+        // Sales rung up on these dates and since fully returned. Gross sales
+        // leaves them out, as the rest of this module does — but their refunds
+        // are counted below on the day they were given. So they come back into
+        // the takings sum here, with the debt they created, and every sale and
+        // every refund counts exactly once, on its own date. Without this, a
+        // sale and its return inside the same dates would take the goods off
+        // twice, and a past day's figures would change after a later return.
+        const returnedSales = await Sale.findAll({
+            where: { ...(billableSalesWhere(query) as object), status: "REVERSED" } as WhereOptions,
+        });
+        const returnedSalesTotal = returnedSales.reduce((total, sale) => total + sale.total, 0);
+        const salesOnTheseDates = [...sales, ...returnedSales];
+
+        const creditSales = salesOnTheseDates.reduce((total, sale) => total + sale.debtCharged, 0);
+        const debtCollected = repayments.reduce((total, entry) => total - entry.amount, 0);
+        const debtCleared = reversals.reduce((total, entry) => total - entry.amount, 0);
+
+        // A return on goods that were bought on account clears that debt
+        // before any money is handed back, so only the rest left the drawer.
+        // Counting the whole refund as well as the debt taken would take the
+        // same goods off twice.
+        const refundsPaidOut = Math.max(refundedAmount - debtCleared, 0);
 
         // Expenses follow the same filters as the sales they are set against:
         // one cashier's report deducts what that cashier paid out.
@@ -162,10 +212,34 @@ export const getSalesSummaryService = async (
             byMethod: buildPaymentMix(sales),
             refundedAmount,
             refundCount: refunds.length,
-            creditSales: sales.reduce((total, sale) => total + sale.debtCharged, 0),
-            debtCollected: repayments.reduce((total, entry) => total - entry.amount, 0),
+            returnedSalesTotal,
+            creditSales,
+            debtCollected,
+            debtCleared,
+            refundsPaidOut,
+            debtActivity: {
+                taken: salesOnTheseDates
+                    .filter((sale) => sale.debtCharged > 0)
+                    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+                    .map((sale) => ({
+                        saleId: sale.id,
+                        receiptNumber: sale.receiptNumber,
+                        customerId: sale.customerId,
+                        customerName: sale.customerName,
+                        amount: sale.debtCharged,
+                        recordedBy: sale.cashierName,
+                        status: sale.status,
+                        createdAt: sale.createdAt,
+                    })),
+                paid: repayments.map(toMovement),
+                cleared: reversals.map(toMovement),
+            },
             expenses,
-            netSales: grossSales - refundedAmount - expenses.total,
+            // Money the period actually brought in. Gross sales count goods the
+            // moment they leave, paid for or not; so what went on account comes
+            // off, and old debt paid back goes on.
+            netSales:
+                grossSales + returnedSalesTotal - creditSales + debtCollected - refundsPaidOut - expenses.total,
         };
 
         return callback(messageHandler("Sales summary retrieved", true, SUCCESS, summary));

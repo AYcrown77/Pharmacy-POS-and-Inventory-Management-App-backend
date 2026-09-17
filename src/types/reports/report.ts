@@ -42,12 +42,28 @@ export interface SalesReportSummary {
     byMethod: PaymentMixEntry[];
     refundedAmount: number;
     refundCount: number;
-    /** Goods handed over on account: in gross sales, but not yet paid for. */
+    /**
+     * Sales rung up on these dates that have since been fully returned. Left
+     * out of gross sales, but their refunds are money out on the day of the
+     * return — so the takings sum adds them back to count each sale once.
+     */
+    returnedSalesTotal: number;
+    /** Debt taken: goods handed over on account on these dates, not yet paid for. */
     creditSales: number;
-    /** Money received against customers' debts — not a sale, but in the drawer. */
+    /** Debt paid back: money received against customers' debts — not a sale, but in the drawer. */
     debtCollected: number;
+    /** Returned goods that cleared a customer's debt rather than being paid out. */
+    debtCleared: number;
+    /** Refunds handed back as money: the value of returns, less the debt they cleared. */
+    refundsPaidOut: number;
+    /** Every entry behind the three debt figures, newest first. */
+    debtActivity: DebtActivity;
     expenses: ExpenseSummary;
-    /** Gross sales, less refunds, less expenses. */
+    /**
+     * What the period actually brought in: gross sales, plus sales since fully
+     * returned, less debt taken, plus debt paid back, less refunds paid out,
+     * less expenses. Every part is counted on the date it happened.
+     */
     netSales: number;
 }
 
@@ -82,3 +98,38 @@ export interface DebtorRow {
 }
 
 export type ReportResponse = BaseResponse;
+
+/** One sale that put goods on a customer's account. */
+export interface DebtTakenEntry {
+    saleId: string;
+    receiptNumber: string;
+    customerId: string | null;
+    customerName: string | null;
+    /** Kobo taken on account by this sale. */
+    amount: number;
+    recordedBy: string;
+    /** REVERSED when the goods have since all come back. */
+    status: string;
+    createdAt: Date;
+}
+
+/** Money paid back, or debt cleared by a return — one ledger entry. */
+export interface DebtLedgerMovement {
+    entryId: string;
+    customerId: string;
+    customerName: string;
+    /** Kobo, always positive. */
+    amount: number;
+    /** The sale it happened with, if any: a surplus at the till, or a return. */
+    saleId: string | null;
+    receiptNumber: string | null;
+    recordedBy: string;
+    reason: string | null;
+    createdAt: Date;
+}
+
+export interface DebtActivity {
+    taken: DebtTakenEntry[];
+    paid: DebtLedgerMovement[];
+    cleared: DebtLedgerMovement[];
+}
